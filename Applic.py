@@ -726,10 +726,47 @@ class PageTwo(ttk.Frame):
 
         self.items_per_page = 24
         self.current_page = 0
+        
+        # -- Search and Sort Frame --
+        self.search_sort_frame = ttk.Frame(self)
+        self.search_sort_frame.pack(pady=5, fill="x")
+        
+        # Name search
+        ttk.Label(self.search_sort_frame, text="Name:").pack(side=tk.LEFT, padx=5)
+        self.name_search_entry = ttk.Entry(self.search_sort_frame, width=20)
+        self.name_search_entry.pack(side=tk.LEFT, padx=5)
+        self.name_search_entry.bind("<Return>", lambda e: self.apply_filters())
 
+        # Tag filter
+        ttk.Label(self.search_sort_frame, text="Tag(s):").pack(side=tk.LEFT, padx=5)
+        self.tag_filter_entry = ttk.Entry(self.search_sort_frame, width=15)
+        self.tag_filter_entry.pack(side=tk.LEFT, padx=5)
+        self.tag_filter_entry.bind("<Return>", lambda e: self.apply_filters())
+
+        # Sort preference
+        ttk.Label(self.search_sort_frame, text="Sort:").pack(side=tk.LEFT, padx=5)
+        self.sort_combobox = ttk.Combobox(
+            self.search_sort_frame,
+            values=["Alphabetical", "Random"],
+            state="readonly",
+            width=12
+        )
+        self.sort_combobox.pack(side=tk.LEFT, padx=5)
+        self.sort_combobox.set("Alphabetical")  # Default sort
+
+        # "Search" button
+        self.search_button = ttk.Button(
+            self.search_sort_frame,
+            text="Search",
+            command=self.apply_filters
+        )
+        self.search_button.pack(side=tk.LEFT, padx=5)
+        
+        # Items frame
         self.items_frame = ttk.Frame(self)
         self.items_frame.pack(pady=10)
 
+        # Navigation frame
         self.nav_frame = ttk.Frame(self)
         self.nav_frame.pack(pady=10)
 
@@ -742,24 +779,82 @@ class PageTwo(ttk.Frame):
         self.current_button = None
         self.popup_menu = tk.Menu(self, tearoff=0)
         self.popup_menu.add_command(label="Remove", command=self.discard)
+        
+        # Store the full favorites list and the filtered version
+        self.favorites_dict = {}
+        self.displayed_favorites = []
 
+        # Initial loading of data and page
+        self.apply_filters()
+        
+    def apply_filters(self):
+        """Load favorites, then filter by name and tag, then sort by user preference."""
+        # 1. Load favorites
+        self.favorites_dict = dm.load_favorite_json()
+        all_favorites = list(self.favorites_dict.keys())
+
+        # 2. Name filter (partial match)
+        name_query = self.name_search_entry.get().strip().lower()
+        
+        # 3. Tag filter (OR logic for multiple comma-separated tag IDs)
+        raw_tags = self.tag_filter_entry.get().strip()
+        if raw_tags:
+            # Split by comma, convert to int if possible
+            try:
+                tag_ids_to_filter = [int(tag.strip()) for tag in raw_tags.split(",")]
+            except ValueError:
+                tag_ids_to_filter = []
+                logging.warning("Tag filter must be numeric. Some tags could not be converted.")
+        else:
+            tag_ids_to_filter = []
+
+        # 4. Filter logic
+        filtered_codes = []
+        for code_val in all_favorites:
+            entry = self.favorites_dict[code_val]
+            # a) Check name
+            match_name = (name_query in entry["name"].lower()) if name_query else True
+            # b) Check tags
+            if tag_ids_to_filter:
+                # We do "OR" matching: any matching tag in the set
+                code_tags = set(entry["tags"])
+                match_tags = any(tid in code_tags for tid in tag_ids_to_filter)
+            else:
+                match_tags = True
+
+            if match_name and match_tags:
+                filtered_codes.append(code_val)
+
+        # 5. Sort preference
+        sort_pref = self.sort_combobox.get()
+        if sort_pref == "Alphabetical":
+            filtered_codes.sort(
+                key=lambda c: self.favorites_dict[c]["name"].lower()
+            )
+        elif sort_pref == "Random":
+            random.shuffle(filtered_codes)
+
+        # Save filtered results
+        self.displayed_favorites = filtered_codes
+        # Reset pagination and update
+        self.current_page = 0
         self.update_page()
 
     def update_page(self):
+        """Display the filtered favorites on the current page."""
+        # Clear the frame
         for widget in self.items_frame.winfo_children():
             widget.destroy()
-            
-        self.favorites_dict = dm.load_favorite_json()
-        self.favorites = list(self.favorites_dict.keys())
 
-        selected_codes = self.favorites if self.favorites else []
+        # Current page slice
         start_index = self.current_page * self.items_per_page
         end_index = start_index + self.items_per_page
-        page_items = selected_codes[start_index:end_index]
+        page_items = self.displayed_favorites[start_index:end_index]
 
-        rows = 6
-        cols = 4
-        self.images = [self.load_image(c) for c in selected_codes]
+        # For image handling
+        self.images = [self.load_image(c) for c in page_items]
+
+        # Decide button size based on user settings
         if self.controller.settings['images']:
             height = 150
             width = 100
@@ -767,42 +862,46 @@ class PageTwo(ttk.Frame):
             height = 8
             width = 10
 
+        rows, cols = 6, 4
         for idx, code_val in enumerate(page_items):
             r = idx // cols
             c = idx % cols
 
-            # Create a frame for the label and button
+            # Create a frame for each item
             item_frame = ttk.Frame(self.items_frame)
             item_frame.grid(row=r, column=c, padx=10, pady=0, sticky="nsew")
 
-            # Add a label for the text above the button
+            # Title / Name above the button
             label_text = self.favorites_dict[code_val]['name']
             label = ttk.Label(
                 item_frame, 
-                text=label_text,  
-                wraplength=100,  # Wrap text to fit the button width
+                text=label_text,
+                wraplength=100,
                 justify="center"
             )
             
 
-            # Add the button
-            btn_img = self.images[start_index + idx]
+            # Button (cover image or blank)
+            btn_img = self.images[idx]  # images for just this page's items
             button = tk.Button(
                 item_frame,
                 image=btn_img,
-                text = code_val,
+                text=code_val,
                 width=width,
                 height=height,
                 command=lambda val=code_val: self.open_code(val)
             )
             button.pack()
             button.bind("<Button-3>", self.show_popup)
-            label.pack(pady=(5, 0))  # Add some padding below the label
+            label.pack(pady=(0, 10))
 
+        # Enable/disable nav buttons
         self.prev_button.config(state=tk.NORMAL if self.current_page > 0 else tk.DISABLED)
         self.next_button.config(
-            state=tk.NORMAL if (self.current_page + 1) * self.items_per_page < len(selected_codes) else tk.DISABLED
+            state=tk.NORMAL if (self.current_page + 1) * self.items_per_page < len(self.displayed_favorites) else tk.DISABLED
         )
+
+        # Adjust the window size if needed
         self.controller.adjust_window_size()
 
     def next_page(self):
@@ -844,11 +943,12 @@ class PageTwo(ttk.Frame):
         code = int(self.current_button.cget("text"))
         
         fav_dict = dm.load_favorite_json()
-        del fav_dict[code]
-        
-        dm.save_favorites_json(fav_dict)
+        if code in fav_dict:
+            del fav_dict[code]
+            dm.save_favorites_json(fav_dict)
 
-        self.update_page()
+        # Re-apply the current filters/sort to stay consistent
+        self.apply_filters()
 
 
 
@@ -899,6 +999,16 @@ class PageThree(ttk.Frame):
         self.banned_tag = self.controller.settings['banned']['tags']
         self.banned_tag_codes = [t[0] for t in self.banned_tag]
         self.banned_tag_names = [t[1] for t in self.banned_tag]
+        
+        # Checkbox to hide banned label
+        self.hide_banned = tk.BooleanVar(value=False)
+        self.hide_banned_checkbox = ttk.Checkbutton(
+            self.banned_frame,
+            text="Hide Banned Label",
+            variable=self.hide_banned,
+            command=self.toggle_banned_label
+        )
+        self.hide_banned_checkbox.pack(side=tk.LEFT, padx=10)
 
         # Banned tags display
         self.banned_title = ttk.Label(self.banned_labels_frame, text="Banned Tags:")
@@ -925,6 +1035,15 @@ class PageThree(ttk.Frame):
         self.update_list_button.pack(side=tk.LEFT, padx=10)
         
         self.update_page()
+        
+    def toggle_banned_label(self):
+        """Show or hide the banned label based on the checkbox state."""
+        if self.hide_banned.get():
+            self.banned_label.pack_forget()
+            self.banned_title.pack_forget()
+        else:
+            self.banned_title.pack(side=tk.LEFT, padx=5)
+            self.banned_label.pack(side=tk.LEFT, padx=5)
 
     def code_generate_async(self, update):
         self.progress_window = Toplevel(self)
@@ -1163,6 +1282,8 @@ class PageThree(ttk.Frame):
     def update_page(self):
         """Update the displayed tags on the current page."""
         self.banned_label.config(text=self.banned_tag_names)
+        self.banned_label.update_idletasks()  # Ensure wraplength adjusts dynamically
+        self.banned_label.config(wraplength=self.winfo_width() - 50)  # Adjust wraplength dynamically
 
         # Clear items_frame
         for widget in self.items_frame.winfo_children():
