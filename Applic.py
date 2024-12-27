@@ -798,15 +798,20 @@ class PageTwo(ttk.Frame):
         
         # 3. Tag filter (OR logic for multiple comma-separated tag IDs)
         raw_tags = self.tag_filter_entry.get().strip()
+        
+        tag_ids_to_filter = []
+        
         if raw_tags:
             # Split by comma, convert to int if possible
-            try:
-                tag_ids_to_filter = [int(tag.strip()) for tag in raw_tags.split(",")]
-            except ValueError:
-                tag_ids_to_filter = []
-                logging.warning("Tag filter must be numeric. Some tags could not be converted.")
-        else:
-            tag_ids_to_filter = []
+            
+            tag_names_to_filter = [tag.strip() for tag in raw_tags.split(",")]
+            for tag_input in tag_names_to_filter:
+                try:
+                    tag_ids_to_filter.append(int(tag_input))
+                except ValueError:
+                    possible_ids = self.find_tag_id(tag_input)
+                    for tag_id in possible_ids:
+                        tag_ids_to_filter.append(tag_id)
 
         # 4. Filter logic
         filtered_codes = []
@@ -949,6 +954,11 @@ class PageTwo(ttk.Frame):
 
         # Re-apply the current filters/sort to stay consistent
         self.apply_filters()
+        
+    def find_tag_id(self, tag_input):
+        all_tags = self.controller.tags
+        filtered_tags = [tag[0] for tag in all_tags if tag_input in tag[1].lower()]
+        return filtered_tags
 
 
 
