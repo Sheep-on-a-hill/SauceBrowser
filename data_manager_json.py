@@ -4,6 +4,7 @@ import json
 INFO_DIR = "Info"
 USABLE_CODES_JSON = os.path.join(INFO_DIR, "usable_codes.json")
 FAVORITE_CODES_JSON = os.path.join(INFO_DIR, "favorite_codes.json")
+SETTINGS_JSON = os.path.join(INFO_DIR, "settings.json")
 
 def load_codes_json():
     """
@@ -142,3 +143,37 @@ def save_favorites_json(codes_dict):
     with open(FAVORITE_CODES_JSON, "w", encoding="utf-8") as f:
         json.dump(out_dict, f, indent=2)
         
+def load_settings():
+    if not os.path.exists(SETTINGS_JSON):
+        raise FileNotFoundError(f"Settings file not found: {SETTINGS_JSON}")
+     
+    try:
+        with open(SETTINGS_JSON, "r", encoding="utf-8") as file:
+            settings = json.load(file)
+    
+        # Convert banned tags from lists back to tuples
+        if "banned" in settings and "tags" in settings["banned"]:
+            settings["banned"]["tags"] = [
+                tuple(tag) for tag in settings["banned"]["tags"]
+                ]
+    
+        return settings
+    except Exception as e:
+        raise Exception(f"Failed to read settings from {SETTINGS_JSON}: {e}")
+        
+def write_settings(settings):
+    try:
+       # Ensure banned tags are converted to a JSON-compatible format
+       if "banned" in settings and "tags" in settings["banned"]:
+           settings["banned"]["tags"] = [
+               list(tag) for tag in settings["banned"]["tags"]
+           ]
+
+       # Ensure the directory exists
+       os.makedirs(os.path.dirname(SETTINGS_JSON), exist_ok=True)
+
+       # Write the settings to the file
+       with open(SETTINGS_JSON, "w", encoding="utf-8") as file:
+           json.dump(settings, file, indent=2)
+    except Exception as e:
+        raise Exception(f"Failed to write settings to {SETTINGS_JSON}: {e}")

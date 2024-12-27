@@ -17,5 +17,18 @@
   "paths": {
     "data_directory": "data/",
     "log_file": "logs/app.log"
-  }
+  },
+  "banned": {
+    "tags": [
+      [
+        19440,
+        "place"
+      ],
+      [
+        32341,
+        "holderS"
+      ]
+    ]
+  },
+  "images": false
 }

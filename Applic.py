@@ -160,7 +160,9 @@ class MultiPageApp:
     """
 
     def __init__(self):
-        self.root = ThemedTk(theme='radiance')
+        self.settings = dm.load_settings()
+        
+        self.root = ThemedTk(theme=self.settings['theme']['name'])
         self.root.title("Sauce Selector")
         self.root.geometry("400x510")
 
@@ -171,7 +173,7 @@ class MultiPageApp:
         self.full_list = dm.load_codes_json()
         self.master_list = {key: value for key, value in self.full_list.items() if value.get('visible') == 1}
 
-        self.current_theme = 'radiance'
+        self.current_theme = self.settings['theme']['name']
         self.style = ttk.Style(self.root)
 
         # 2) Kick off a background thread to do async loading
@@ -329,7 +331,7 @@ class HomePage(ttk.Frame):
 
         self.in_progress_frame = ttk.Frame(self, borderwidth=2, relief="ridge")
         self.section_frame = ttk.Frame(self, borderwidth=2, relief="ridge")
-        self.toggle_button_frame = tk.Frame(self)
+        self.toggle_button_frame = ttk.Frame(self)
 
         self.section_label = ttk.Label(self.section_frame, text="Which code?")
         self.code_progress_entry = ttk.Entry(self.section_frame, width=8)
@@ -509,17 +511,20 @@ class HomePage(ttk.Frame):
         self.controller.update_all_pages()
 
     def load_image(self, code):
-        image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
-        if not os.path.exists(image_path):
-            scrape_images(code, COVERS_DIR)
-
-        if os.path.exists(image_path):
-            try:
-                img = Image.open(image_path).resize((100, 150))
-                return ImageTk.PhotoImage(img)
-            except Exception as e:
-                logging.error(f"Error loading image '{image_path}': {e}")
-        return None
+        if self.controller.settings['images']:
+            image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
+            if not os.path.exists(image_path):
+                scrape_images(code, COVERS_DIR)
+    
+            if os.path.exists(image_path):
+                try:
+                    img = Image.open(image_path).resize((100, 150))
+                    return ImageTk.PhotoImage(img)
+                except Exception as e:
+                    logging.error(f"Error loading image '{image_path}': {e}")
+            return None
+        else:
+            return None
 
     def open_in_progress_code(self, code_tuple):
         code, page = code_tuple
@@ -575,6 +580,19 @@ class PageOne(ttk.Frame):
         self.filter_entry = ttk.Entry(self.search_frame, width=20)
         self.filter_entry.pack(side=tk.LEFT, padx=5)
         self.filter_entry.insert(0, "")
+        
+        self.image_checkbox_frame = ttk.Frame(self)
+        self.image_checkbox_frame.pack()
+        
+        self.image_var = tk.BooleanVar(value=self.controller.settings['images'])
+        self.image_checkbox = ttk.Checkbutton(
+            self.image_checkbox_frame,
+            text="Load images",
+            variable=self.image_var,
+            command = self.toggle_image_load
+        )
+        self.image_checkbox.pack()
+        
 
         self.filter_button = ttk.Button(self.search_frame, text="Filter", command=self.apply_filter)
         self.filter_button.pack(side=tk.LEFT, padx=5)
@@ -606,6 +624,11 @@ class PageOne(ttk.Frame):
         self.search_filter = []
         self.filter_entry.delete(0, tk.END)
         self.update_page()
+        
+    def toggle_image_load(self):
+        self.controller.settings['images'] = self.image_var.get()
+        dm.write_settings(self.controller.settings)
+        self.controller.update_all_pages()
 
     def refresh_codes(self):
         self.refresh_button.config(state="disabled")
@@ -615,16 +638,19 @@ class PageOne(ttk.Frame):
         self.loading_label.config(text="")
 
     def load_image(self, code):
-        image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
-        if not os.path.exists(image_path):
-            scrape_images(code, COVERS_DIR)
-        if os.path.exists(image_path):
-            try:
-                img = Image.open(image_path).resize((100, 150))
-                return ImageTk.PhotoImage(img)
-            except Exception as e:
-                logging.error(f"Error loading image '{image_path}': {e}")
-        return None
+        if self.controller.settings['images']:
+            image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
+            if not os.path.exists(image_path):
+                scrape_images(code, COVERS_DIR)
+            if os.path.exists(image_path):
+                try:
+                    img = Image.open(image_path).resize((100, 150))
+                    return ImageTk.PhotoImage(img)
+                except Exception as e:
+                    logging.error(f"Error loading image '{image_path}': {e}")
+            return None
+        else:
+            return None
 
     def open_code(self, code):
         url = f'https://nhentai.net/g/{code}/'
@@ -673,10 +699,11 @@ class PageOne(ttk.Frame):
                 image=self.images[idx],
                 compound="center",
                 font=("Arial", 12),
-                width=100,
-                height=150,
+                width=10,
+                height=8,
                 command=lambda val=code_val: self.open_code(val)
             )
+            # button.config(width = 10, height = 15)
             button.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
 
         self.loading_label.config(text="")
@@ -732,15 +759,14 @@ class PageTwo(ttk.Frame):
             c = idx % cols
 
             # Create a frame for the label and button
-            item_frame = tk.Frame(self.items_frame)
+            item_frame = ttk.Frame(self.items_frame)
             item_frame.grid(row=r, column=c, padx=10, pady=0, sticky="nsew")
 
             # Add a label for the text above the button
             label_text = self.favorites_dict[code_val]['name']
-            label = tk.Label(
+            label = ttk.Label(
                 item_frame, 
-                text=label_text, 
-                font=("Arial", 10), 
+                text=label_text,  
                 wraplength=100,  # Wrap text to fit the button width
                 justify="center"
             )
@@ -775,16 +801,19 @@ class PageTwo(ttk.Frame):
         self.update_page()
 
     def load_image(self, code):
-        image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
-        if not os.path.exists(image_path):
-            scrape_images(code, COVERS_DIR)
-        if os.path.exists(image_path):
-            try:
-                img = Image.open(image_path).resize((100, 150))
-                return ImageTk.PhotoImage(img)
-            except Exception as e:
-                logging.error(f"Error loading image '{image_path}': {e}")
-        return None
+        if self.controller.settings['images']:
+            image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
+            if not os.path.exists(image_path):
+                scrape_images(code, COVERS_DIR)
+            if os.path.exists(image_path):
+                try:
+                    img = Image.open(image_path).resize((100, 150))
+                    return ImageTk.PhotoImage(img)
+                except Exception as e:
+                    logging.error(f"Error loading image '{image_path}': {e}")
+            return None
+        else:
+            return None
 
     def open_code(self, code):
         url = f'https://nhentai.net/g/{code}/'
