@@ -1,0 +1,21 @@
+{
+  "theme": {
+    "name": "blue",
+    "font_size": 14,
+    "font_family": "Arial"
+  },
+  "network": {
+    "timeout": 30,
+    "retry_attempts": 3,
+    "proxy": null
+  },
+  "app": {
+    "language": "en-US",
+    "auto_update": true,
+    "enable_notifications": true
+  },
+  "paths": {
+    "data_directory": "data/",
+    "log_file": "logs/app.log"
+  }
+}
