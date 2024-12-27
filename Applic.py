@@ -145,10 +145,6 @@ def ban_write(banned):
             file.write(f"{tup}\n")
 
 
-def list_update(codes_dict):
-    """Save the dict of codes to JSON."""
-    dm.save_codes_json(codes_dict)
-
 
 # --------------------
 # Application Classes
@@ -179,6 +175,11 @@ class MultiPageApp:
         # 2) Kick off a background thread to do async loading
         #    so UI won't block
         threading.Thread(target=self.load_data_async, args=(self.master_list,)).start()
+        
+    def list_update(self, codes_dict):
+        """Save the dict of codes to JSON."""
+        self.master_list = {key: value for key, value in self.full_list.items() if value.get('visible') == 1}
+        dm.save_codes_json(codes_dict)
 
     def load_data_async(self, codes_dict):
         """
@@ -467,9 +468,9 @@ class HomePage(ttk.Frame):
         dm.add_favorites_json(fav_dict)
 
         if code in self.controller.master_list:
-            self.controller.master_list[code]['visible'] = 0
+            self.controller.full_list[code]['visible'] = 0
 
-            list_update(self.controller.master_list)
+            self.controller.list_update(self.controller.full_list)
 
             self.in_progress = [t for t in self.in_progress if t[0] != code]
             self._write_in_progress()
@@ -489,10 +490,10 @@ class HomePage(ttk.Frame):
             logging.warning(f"Invalid code: {code_str}")
             return
 
-        if code in self.controller.codes_and_tags:
-            self.controller.codes_and_tags[code]['visible'] = 0
+        if code in self.controller.master_list:
+            self.controller.full_list[code]['visible'] = 0
 
-            list_update(self.controller.codes_and_tags)
+            self.controller.list_update(self.controller.full_list)
 
             cover_path = os.path.join(COVERS_DIR, f"{code}.jpg")
             if os.path.exists(cover_path):
