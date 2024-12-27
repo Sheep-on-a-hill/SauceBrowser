@@ -392,8 +392,8 @@ class HomePage(ttk.Frame):
                 image=self.images[idx],
                 compound="center",
                 font=("Arial", 12),
-                width=100,
-                height=150,
+                width=10,
+                height=8,
                 command=lambda c=(code, page): self.open_in_progress_code(c)
             )
             button.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
@@ -897,6 +897,13 @@ class PageThree(ttk.Frame):
         self.scrape_done = False
         self.scrape_max = 1
 
+        self.generate_list_button = ttk.Button(
+            self.banned_frame,
+            text="Generarate List",
+            command=lambda: self.code_generate_async(update=1)
+        )
+        self.generate_list_button.pack(side=tk.LEFT, padx=10)
+        
         self.update_list_button = ttk.Button(
             self.banned_frame,
             text="Update List",
@@ -906,7 +913,7 @@ class PageThree(ttk.Frame):
         
         self.update_page()
 
-    def code_add_async(self, update):
+    def code_generate_async(self, update):
         self.progress_window = Toplevel(self)
         self.progress_window.title("Scraping Progress")
         self.progress_window.geometry("400x100")
@@ -919,6 +926,23 @@ class PageThree(ttk.Frame):
 
         def run_in_bg():
             asyncio.run(self._scrape_async(update))
+
+        threading.Thread(target=run_in_bg, daemon=True).start()
+        self.check_scrape_progress()
+        
+    def code_add_async(self, update):
+        self.progress_window = Toplevel(self)
+        self.progress_window.title("Scraping Progress")
+        self.progress_window.geometry("400x100")
+
+        label = ttk.Label(self.progress_window, text="Scraping in progress...")
+        label.pack(pady=10)
+
+        self.progress_bar = Progressbar(self.progress_window, length=300, mode="determinate")
+        self.progress_bar.pack(pady=5)
+
+        def run_in_bg():
+            asyncio.run(self.update_scrape_async(update))
 
         threading.Thread(target=run_in_bg, daemon=True).start()
         self.check_scrape_progress()
@@ -1017,6 +1041,102 @@ class PageThree(ttk.Frame):
     
             # 4) Update progress
             self.scrape_progress = page_idx
+            # Let the event loop run other tasks
+            await asyncio.sleep(0)
+    
+        # 5) Save final data
+        dm.save_codes_json(self.controller.master_list)
+    
+        # 6) Mark as done
+        self.scrape_done = True
+        logging.info("Scraping completed successfully.")
+        
+    async def update_scrape_async(self, update):
+    
+        # 2) Discover last page by reading the first page
+        url_base = "https://nhentai.net/search/?q=english"
+        for i in self.banned_tag_names:
+            url_base = url_base+f'+-{i}'
+        url_first = url_base+'&page=1'
+        
+        codes = self.controller.master_list.keys()
+            
+        try:
+            # Because requests is blocking, we run it via asyncio.to_thread
+            first_resp = await asyncio.to_thread(requests.get, url_first)
+            first_resp.raise_for_status()
+        except Exception as e:
+            logging.error(f"Error fetching the first page: {e}")
+            self.scrape_max = 1
+            self.scrape_done = True
+            return
+        
+        soup_first = BeautifulSoup(first_resp.text, "html.parser")
+        last_link = soup_first.find("a", class_="last")
+        if not last_link:
+            logging.warning("Could not find the last-page link. Defaulting to 1.")
+            last_page = 1
+        else:
+            # Extract the page number from something like href="/search/?q=english&page=350"
+            try:
+                last_page = int(last_link.get("href").split("=")[-1])
+            except (ValueError, AttributeError):
+                logging.warning("Failed to parse last-page number. Defaulting to 1.")
+                last_page = 1
+    
+        last_code = max(codes)
+        if not last_code:
+            last_code = 0
+    
+        self.scrape_max = last_code
+        logging.info(f"Determined last_code={last_code} from the saved list.")
+    
+        # 3) Loop over all pages
+        for page_idx in range(1, last_page + 1):
+            url = url_base + f"&page={page_idx}"
+            try:
+                response = await asyncio.to_thread(requests.get, url)
+                response.raise_for_status()
+            except Exception as e:
+                logging.error(f"Error scraping page {page_idx}: {e}")
+                # Decide if you want to break or just continue
+                continue
+    
+            soup = BeautifulSoup(response.text, "html.parser")
+            comics = soup.find_all("div", class_="gallery")
+            if not comics:
+                logging.info(f"No galleries found on page {page_idx}. Stopping early.")
+                break
+    
+            for comic in comics:
+                # e.g. data-tags="12345 23456 34567"
+                tag_strs = comic.get("data-tags", "").split()
+                try:
+                    tag_ids = set(int(t) for t in tag_strs)
+                except ValueError:
+                    tag_ids = set()
+    
+                link_a = comic.find("a")
+                if not link_a:
+                    continue
+                code_link = link_a.get("href", "")
+                # Typically /g/123456/
+                if code_link.startswith("/g/") and code_link.endswith("/"):
+                    try:
+                        code_val = int(code_link[3:-1])
+                    except ValueError:
+                        continue
+    
+                    # If brand-new code, store it and scrape images
+                    if code_val not in self.controller.master_list:
+                        self.controller.master_list[code_val] = {'tags':tag_ids, 'visible': 1}
+                        # Scrape cover images in a background-friendly manner
+                        await asyncio.to_thread(scrape_images, code_val, COVERS_DIR)
+            if code_val < last_code:
+                break
+    
+            # 4) Update progress
+            self.scrape_progress = code_val - last_code
             # Let the event loop run other tasks
             await asyncio.sleep(0)
     
