@@ -381,6 +381,13 @@ class HomePage(ttk.Frame):
 
         for col in range(6):
             self.in_progress_frame.columnconfigure(col, weight=0, minsize=100)
+            
+        if self.controller.settings['images']:
+            height = 150
+            width = 100
+        else:
+            height = 8
+            width = 10
 
         self.images = [self.load_image(i) for i, _ in self.in_progress]
         for idx, (code, page) in enumerate(self.in_progress):
@@ -392,8 +399,8 @@ class HomePage(ttk.Frame):
                 image=self.images[idx],
                 compound="center",
                 font=("Arial", 12),
-                width=10,
-                height=8,
+                width=width,
+                height=height,
                 command=lambda c=(code, page): self.open_in_progress_code(c)
             )
             button.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
@@ -753,6 +760,12 @@ class PageTwo(ttk.Frame):
         rows = 6
         cols = 4
         self.images = [self.load_image(c) for c in selected_codes]
+        if self.controller.settings['images']:
+            height = 150
+            width = 100
+        else:
+            height = 8
+            width = 10
 
         for idx, code_val in enumerate(page_items):
             r = idx // cols
@@ -778,8 +791,8 @@ class PageTwo(ttk.Frame):
                 item_frame,
                 image=btn_img,
                 text = code_val,
-                width=100,
-                height=150,
+                width=width,
+                height=height,
                 command=lambda val=code_val: self.open_code(val)
             )
             button.pack()
@@ -883,7 +896,7 @@ class PageThree(ttk.Frame):
         self.search_button.pack(side=tk.LEFT, padx=5)
 
         # Initialize banned tags
-        self.banned_tag = ban_read()
+        self.banned_tag = self.controller.settings['banned']['tags']
         self.banned_tag_codes = [t[0] for t in self.banned_tag]
         self.banned_tag_names = [t[1] for t in self.banned_tag]
 
@@ -1194,12 +1207,12 @@ class PageThree(ttk.Frame):
         if tag_code not in self.banned_tag_codes:
             self.banned_tag_codes.append(tag_code)
             self.banned_tag_names.append(tag_name)
-            self.banned_tag.append(tag)
+            self.controller.settings['banned']['tags'].append(tag)
         else:
             self.banned_tag_codes.remove(tag_code)
             self.banned_tag_names.remove(tag_name)
-            self.banned_tag.remove(tag)
-        ban_write(self.banned_tag)
+            self.controller.settings['banned']['tags'].remove(tag)
+        dm.write_settings(self.controller.settings)
         if not self.search_entry.get().strip():
             self._reset_search()
         
