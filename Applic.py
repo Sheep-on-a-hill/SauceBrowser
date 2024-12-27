@@ -578,6 +578,9 @@ class PageOne(ttk.Frame):
         super().__init__(parent)
         self.notebook = notebook
         self.controller = controller
+        
+        self.button_width = 150
+        self.button_height = 225
 
         self.search_filter = ""
 
@@ -651,7 +654,7 @@ class PageOne(ttk.Frame):
                 scrape_images(code, COVERS_DIR)
             if os.path.exists(image_path):
                 try:
-                    img = Image.open(image_path).resize((100, 150))
+                    img = Image.open(image_path).resize((self.button_width, self.button_height))
                     return ImageTk.PhotoImage(img)
                 except Exception as e:
                     logging.error(f"Error loading image '{image_path}': {e}")
@@ -693,9 +696,9 @@ class PageOne(ttk.Frame):
         self.images = [self.load_image(c) for c in selected_codes]
 
         for row in range(2):
-            self.code_buttons_frame.rowconfigure(row, weight=0, minsize=150)
+            self.code_buttons_frame.rowconfigure(row, weight=0, minsize=self.button_height)
         for col in range(3):
-            self.code_buttons_frame.columnconfigure(col, weight=0, minsize=100)
+            self.code_buttons_frame.columnconfigure(col, weight=0, minsize=self.button_width)
 
         for idx, code_val in enumerate(selected_codes):
             row = idx // 3
