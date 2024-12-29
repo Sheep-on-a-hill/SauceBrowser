@@ -16,7 +16,7 @@ from tkinter.ttk import Progressbar
 import asyncio
 import threading
 
-# These two come from your separate data_manager_json
+# Import your data manager
 import data_manager_json as dm
 
 
@@ -24,31 +24,45 @@ import data_manager_json as dm
 # Constants & Helpers
 # --------------------
 
-INFO_DIR = "Info"
-COVERS_DIR = "Covers"
-IN_PROGRESS_FILE = os.path.join(INFO_DIR, "InProgress.txt")
-TAGS_FILE = os.path.join(INFO_DIR, "tags.txt")
-BANNED_TAGS = os.path.join(INFO_DIR, "banned_tags.txt")
+INFO_DIR = dm.INFO_DIR
+COVERS_DIR = dm.COVERS_DIR
 
+# Initialize logging AFTER reading settings so we can use log_file from user config
+app_settings = dm.load_settings()
+log_file_path = app_settings["paths"]["log_file"]
+os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 logging.basicConfig(
+    filename=log_file_path,  # log to user-specified file
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
+TAGS_FILE = os.path.join(INFO_DIR, "tags.txt")
+
 
 def get_name(code):
-    url = f'https://nhentai.net/g/{code}/'
+    """
+    Example: Wrap requests in retry logic & proxy usage from settings['network'].
+    """
+    net_cfg = app_settings["network"]
+    proxies = {"http": net_cfg["proxy"], "https": net_cfg["proxy"]} if net_cfg["proxy"] else None
     
-    response = requests.get(url)
-    if response.status_code != 200:
-        logging.warning(f"Failed to fetch {url}")
-        return
-
-    soup = BeautifulSoup(response.content, "html.parser")
-    name_tag = soup.find('span', class_='pretty')
-    name = name_tag.text if name_tag else "Unknown Name"
-    return name
+    url = f'https://nhentai.net/g/{code}/'
+    # Simple retry logic
+    for attempt in range(net_cfg["retry_attempts"]):
+        try:
+            response = requests.get(url, timeout=net_cfg["timeout"], proxies=proxies)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, "html.parser")
+                name_tag = soup.find('span', class_='pretty')
+                name = name_tag.text if name_tag else "Unknown Name"
+                return name
+            else:
+                logging.warning(f"Failed to fetch {url} with status {response.status_code}")
+        except Exception as e:
+            logging.error(f"Request attempt {attempt+1} failed: {e}")
+    return "Unknown Name"
 
 def get_tags(banned_tags):
     """Run a subprocess to get tags from 'TagTest.py' with given banned tags."""
@@ -57,10 +71,12 @@ def get_tags(banned_tags):
 
 def scrape_images(code, output_folder):
     """
-    Scrape the cover image for a given code from nhentai.net and save it locally.
+    Example: Use network config for scraping the cover as well.
     """
-    url = f"https://nhentai.net/g/{code}/"
+    net_cfg = app_settings["network"]
+    proxies = {"http": net_cfg["proxy"], "https": net_cfg["proxy"]} if net_cfg["proxy"] else None
 
+    url = f"https://nhentai.net/g/{code}/"
     image_path = os.path.join(output_folder, f"{code}.jpg")
     if os.path.exists(image_path):
         return None
@@ -68,35 +84,39 @@ def scrape_images(code, output_folder):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    response = requests.get(url)
-    if response.status_code != 200:
-        logging.warning(f"Failed to fetch {url}")
-        return
+    # Wrap in retries
+    for attempt in range(net_cfg["retry_attempts"]):
+        try:
+            response = requests.get(url, timeout=net_cfg["timeout"], proxies=proxies)
+            if response.status_code != 200:
+                logging.warning(f"Failed to fetch {url}")
+                return
 
-    soup = BeautifulSoup(response.content, "html.parser")
-    img_tags = soup.find_all("img")
-    if len(img_tags) < 2:
-        logging.warning(f"No suitable images found for code {code}")
-        return
+            soup = BeautifulSoup(response.content, "html.parser")
+            img_tags = soup.find_all("img")
+            if len(img_tags) < 2:
+                logging.warning(f"No suitable images found for code {code}")
+                return
 
-    img_tag = img_tags[1]
-    img_url = (
-        img_tag.get("data-src")
-        or img_tag.get("data-lazy-src")
-        or img_tag.get("data-original")
-        or img_tag.get("src")
-    )
+            img_tag = img_tags[1]
+            img_url = (
+                img_tag.get("data-src")
+                or img_tag.get("data-lazy-src")
+                or img_tag.get("data-original")
+                or img_tag.get("src")
+            )
 
-    if not img_url.startswith("http"):
-        img_url = requests.compat.urljoin(url, img_url)
+            if not img_url.startswith("http"):
+                img_url = requests.compat.urljoin(url, img_url)
 
-    try:
-        img_data = requests.get(img_url).content
-        with open(image_path, "wb") as img_file:
-            img_file.write(img_data)
-        logging.info(f"Downloaded cover for code {code} -> {image_path}")
-    except Exception as e:
-        logging.error(f"Failed to download {img_url}: {e}")
+            img_data = requests.get(img_url, timeout=net_cfg["timeout"], proxies=proxies).content
+            with open(image_path, "wb") as img_file:
+                img_file.write(img_data)
+            logging.info(f"Downloaded cover for code {code} -> {image_path}")
+            return
+        except Exception as e:
+            logging.error(f"Attempt {attempt+1}: Failed to download {url}: {e}")
+    # If all attempts fail, do nothing.
 
 
 def code_read():
@@ -121,30 +141,6 @@ def tag_read():
     return tags
 
 
-def ban_read():
-    """Read and return a list of banned tags from BANNED_TAGS file (each line is a (tag_id, tag_name) tuple)."""
-    if not os.path.exists(BANNED_TAGS):
-        return []
-    tags = []
-    with open(BANNED_TAGS, "r", encoding="utf-8") as file:
-        for line in file:
-            line = line.strip()
-            if line:
-                try:
-                    tup = ast.literal_eval(line)
-                    tags.append(tup)
-                except ValueError:
-                    pass
-    return tags
-
-
-def ban_write(banned):
-    """Write the banned tags (list of (tag_id, tag_name)) to the BANNED_TAGS file."""
-    with open(BANNED_TAGS, "w", encoding="utf-8") as file:
-        for tup in banned:
-            file.write(f"{tup}\n")
-
-
 
 # --------------------
 # Application Classes
@@ -158,27 +154,49 @@ class MultiPageApp:
     def __init__(self):
         self.settings = dm.load_settings()
         
-        self.root = ThemedTk(theme=self.settings['theme']['name'])
-        self.root.title("Sauce Selector")
-        self.root.geometry("400x510")
+        # -- Adjust the Data & Logging directories if you'd like:
+        global INFO_DIR
+        INFO_DIR = self.settings["paths"]["info_directory"]
+        os.makedirs(INFO_DIR, exist_ok=True)
+        
+        # -- Initialize ThemedTk with the user-chosen theme --
+        self.root = ThemedTk(theme=self.settings["theme"]["name"])
+        
+        # fallback if not specified in settings
+        default_size = self.settings["app"].get("window_size", "400x510")
+        self.root.geometry(default_size)
 
-        # 1) Show a loading label
+        # Example: set a custom font
+        font_family = self.settings["theme"]["font_family"]
+        font_size = self.settings["theme"]["font_size"]
+        
+        # to globally set fonts
+        self.style = ttk.Style(self.root)
+        self.style.configure(".", font=(font_family, font_size))
+        
+        self.root.title("Sauce Selector")
+
+        # Show a loading label
         self.loading_label = ttk.Label(self.root, text="Loading data, please wait...")
         self.loading_label.pack(pady=50)
 
         self.full_list = dm.load_codes_json()
-        self.master_list = {key: value for key, value in self.full_list.items() if value.get('visible') == 1}
+        self.master_list = {
+            key: value for key, value in self.full_list.items() if value.get('visible') == 1
+        }
 
         self.current_theme = self.settings['theme']['name']
-        self.style = ttk.Style(self.root)
-
-        # 2) Kick off a background thread to do async loading
-        #    so UI won't block
+        
+        # Start a background load
         threading.Thread(target=self.load_data_async, args=(self.master_list,)).start()
         
     def list_update(self, codes_dict):
-        """Save the dict of codes to JSON."""
-        self.master_list = {key: value for key, value in self.full_list.items() if value.get('visible') == 1}
+        """
+        Save updated dictionary of codes.
+        """
+        self.master_list = {
+            key: value for key, value in self.full_list.items() if value.get('visible') == 1
+        }
         dm.save_codes_json(codes_dict)
 
     def load_data_async(self, codes_dict):
@@ -194,21 +212,14 @@ class MultiPageApp:
             logging.error(f"Error loading data: {e}", exc_info=True)
 
     async def load_data(self, codes_dict):
-        """
-        Example: load data asynchronously. Simulate a short delay.
-        """
-        # Save data to our instance attributes
-        self.tags = tag_read()
+        # Potential place to do an auto-update check if self.settings["app"]["auto_update"] is True
+        # e.g. if self.settings["app"]["auto_update"]: 
+        #        do_something()
 
-        # Simulate some loading time
+        self.tags = tag_read()
         await asyncio.sleep(1)
 
     def initialize_ui(self):
-        """
-        Called AFTER data has finished loading in the background thread.
-        We remove the loading label and build the real UI (notebook, pages).
-        """
-        # Remove the "Loading..." label
         self.loading_label.destroy()
 
         # Create a style menu
@@ -218,12 +229,12 @@ class MultiPageApp:
         self.style_menu.add_cascade(label="Themes", menu=self.theme_menu)
         self.theme_menu.add_command(label='Options', command=self.open_theme_selector)
 
-        # Create the notebook and store references
+        # Create the notebook
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True)
         self.pages = []
 
-        # Add each page
+        # Add pages
         self.add_page(HomePage, "Home Page")
         self.add_page(lambda p, n, c: PageOne(p, n, c), "Sauce selection")
         self.add_page(PageTwo, "Favorites")
@@ -231,8 +242,6 @@ class MultiPageApp:
         self.add_page(PageFour, "Statistics")
 
         self.notebook.bind("<<NotebookTabChanged>>", self.adjust_window_size)
-
-        # Now that UI is built, we can do a geometry update
         self.adjust_window_size()
 
     def add_page(self, page_class, title):
@@ -259,7 +268,7 @@ class MultiPageApp:
     def adjust_window_size(self, event=None):
         """Adjust the window size based on the currently selected page."""
         if not hasattr(self, 'notebook'):
-            return  # If called too early
+            return 
         current_page = self.notebook.nametowidget(self.notebook.select())
         current_page.update_idletasks()
         width = current_page.winfo_reqwidth()
@@ -279,9 +288,6 @@ class MultiPageApp:
 
 
 class ThemeSelectorPopup(tk.Toplevel):
-    """
-    A popup window to select themes dynamically.
-    """
     def __init__(self, controller):
         super().__init__(controller.root)
         self.controller = controller
@@ -311,7 +317,9 @@ class ThemeSelectorPopup(tk.Toplevel):
         new_theme = self.selected_theme.get()
         self.controller.root.set_theme(new_theme)
         self.controller.current_theme = new_theme
-
+        # Save that choice
+        self.controller.settings["theme"]["name"] = new_theme
+        dm.write_settings(self.controller.settings)
         # Optionally update the background color
         bg_color = self.style.lookup("TFrame", "background") or "SystemButtonFace"
         self.configure(bg=bg_color)
@@ -359,17 +367,7 @@ class HomePage(ttk.Frame):
         self.update_page()
 
     def load_in_progress_data(self):
-        in_progress = []
-        if os.path.exists(IN_PROGRESS_FILE):
-            with open(IN_PROGRESS_FILE, 'r', encoding="utf-8") as file:
-                for line in file:
-                    line = line.strip()
-                    if line:
-                        try:
-                            tup = ast.literal_eval(line)
-                            in_progress.append(tup)
-                        except ValueError:
-                            pass
+        in_progress = self.controller.settings['in_progress']
         return in_progress
 
     def display_in_progress_comics(self):
@@ -390,8 +388,9 @@ class HomePage(ttk.Frame):
             height = 8
             width = 10
 
-        self.images = [self.load_image(i) for i, _ in self.in_progress]
-        for idx, (code, page) in enumerate(self.in_progress):
+        self.images = [self.load_image(i) for i in self.in_progress]
+        for idx, code in enumerate(self.in_progress):
+            code = str(code)
             row = (idx // 6) + 1
             col = idx % 6
             button = tk.Button(
@@ -402,7 +401,7 @@ class HomePage(ttk.Frame):
                 font=("Arial", 12),
                 width=width,
                 height=height,
-                command=lambda c=(code, page): self.open_in_progress_code(c)
+                command=lambda c=(code, self.in_progress_dict[code]): self.open_in_progress_code(c)
             )
             button.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
 
@@ -472,7 +471,11 @@ class HomePage(ttk.Frame):
 
             self.controller.list_update(self.controller.full_list)
 
-            self.in_progress = [t for t in self.in_progress if t[0] != code]
+            del self.controller.settings['in_progress'][str(code)]
+            self._write_in_progress()
+            
+        if code_str in self.in_progress:
+            del self.controller.settings['in_progress'][str(code)]
             self._write_in_progress()
 
         self._reset_entries()
@@ -498,8 +501,9 @@ class HomePage(ttk.Frame):
             cover_path = os.path.join(COVERS_DIR, f"{code}.jpg")
             if os.path.exists(cover_path):
                 os.remove(cover_path)
-
-            self.in_progress = [t for t in self.in_progress if t[0] != code]
+        
+        if code_str in self.in_progress:
+            del self.controller.settings['in_progress'][str(code)]
             self._write_in_progress()
 
         self._reset_entries()
@@ -509,9 +513,13 @@ class HomePage(ttk.Frame):
     def save_progress(self):
         code = self.code_progress_entry.get().strip()
         page = self.page_number_entry.get().strip()
+        
+        if int(code) in self.controller.master_list:
+            self.controller.full_list[int(code)]['visible'] = 0
 
-        self.in_progress = [t for t in self.in_progress if str(code) not in t]
-        self.in_progress.append((code, page))
+            self.controller.list_update(self.controller.full_list)
+
+        self.controller.settings['in_progress'][str(code)] = page
         self._write_in_progress()
 
         self._reset_entries()
@@ -543,7 +551,9 @@ class HomePage(ttk.Frame):
         self.code_progress_entry.insert(0, code)
 
     def update_page(self):
-        self.in_progress = self.load_in_progress_data()
+        print('here')
+        self.in_progress_dict = self.load_in_progress_data()
+        self.in_progress = list(self.in_progress_dict.keys())
         
         self.toggle_button_frame.pack_forget()
 
@@ -561,9 +571,7 @@ class HomePage(ttk.Frame):
         self.controller.adjust_window_size()
 
     def _write_in_progress(self):
-        with open(IN_PROGRESS_FILE, 'w', encoding="utf-8") as file:
-            for entry in self.in_progress:
-                file.write(f"{entry}\n")
+        dm.write_settings(self.controller.settings)
 
     def _reset_entries(self):
         self.code_progress_entry.delete(0, tk.END)
@@ -1406,10 +1414,7 @@ class PageFour(ttk.Frame):
         usable_codes = code_read()  
         self.usable_codes_label.config(text=f"Usable Codes: {len(usable_codes)}")
 
-        in_progress_count = 0
-        if os.path.exists(IN_PROGRESS_FILE):
-            with open(IN_PROGRESS_FILE, 'r', encoding="utf-8") as file:
-                in_progress_count = sum(1 for line in file if line.strip())
+        in_progress_count = len(list(self.controller.settings['in_progress'].keys()))
         self.in_progress_label.config(text=f"In Progress: {in_progress_count}")
 
         favorites = dm.load_favorite_json()
@@ -1418,7 +1423,7 @@ class PageFour(ttk.Frame):
         tags_list = tag_read()
         self.tags_label.config(text=f"Tags: {len(tags_list)}")
 
-        banned = ban_read()
+        banned = self.controller.settings['banned']['tags']
         self.banned_label.config(text=f"Banned Tags: {len(banned)}")
 
         self.controller.adjust_window_size()
@@ -1429,8 +1434,8 @@ class PageFour(ttk.Frame):
 # --------------------
 
 if __name__ == "__main__":
-    os.makedirs(INFO_DIR, exist_ok=True)
-    os.makedirs(COVERS_DIR, exist_ok=True)
+    os.makedirs(app_settings["paths"]["info_directory"], exist_ok=True)
+    os.makedirs(app_settings["paths"]["covers_directory"], exist_ok=True)
 
     app = MultiPageApp()
     app.mainloop()

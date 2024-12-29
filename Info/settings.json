@@ -1,7 +1,7 @@
 {
   "theme": {
-    "name": "blue",
-    "font_size": 14,
+    "name": "adapta",
+    "font_size": 12,
     "font_family": "Arial"
   },
   "network": {
@@ -12,10 +12,12 @@
   "app": {
     "language": "en-US",
     "auto_update": true,
-    "enable_notifications": true
+    "enable_notifications": true,
+    "window_size": "400x510"
   },
   "paths": {
-    "data_directory": "data/",
+    "info_directory": "Info/",
+    "covers_directory": "Covers/",
     "log_file": "logs/app.log"
   },
   "banned": {
@@ -42,5 +44,8 @@
       ]
     ]
   },
-  "images": true
+  "images": true,
+  "in_progress": {
+    "175658": 36
+  }
 }
