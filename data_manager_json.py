@@ -6,6 +6,7 @@ COVERS_DIR = "Covers"
 USABLE_CODES_JSON = os.path.join(INFO_DIR, "usable_codes.json")
 FAVORITE_CODES_JSON = os.path.join(INFO_DIR, "favorite_codes.json")
 SETTINGS_JSON = os.path.join(INFO_DIR, "settings.json")
+TAGS_JSON = os.path.join(INFO_DIR, "tags.json")
 
 DEFAULT_SETTINGS = {
     "theme": {
@@ -172,8 +173,8 @@ def load_settings():
         settings = json.load(file)
 
     # Convert banned tags from lists back to tuples
-    if "banned" in settings and "tags" in settings["banned"]:
-        settings["banned"]["tags"] = [tuple(tag) for tag in settings["banned"]["tags"]]
+    # if "banned" in settings and "tags" in settings["banned"]:
+    #     settings["banned"]["tags"] = [tuple(tag) for tag in settings["banned"]["tags"]]
     return settings
 
 def write_settings(settings):
@@ -189,3 +190,24 @@ def write_settings(settings):
 
     with open(SETTINGS_JSON, "w", encoding="utf-8") as file:
         json.dump(settings, file, indent=2)
+        
+def read_tags():
+    try:
+        with open(TAGS_JSON, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        tags = {int(key): value for key, value in data.items()}
+        return tags
+    except FileNotFoundError:
+        print(f"Error: The file {TAGS_JSON} was not found.")
+    except json.JSONDecodeError as e:
+        print(f"Error: Could not decode JSON. {e}")
+    except ValueError as e:
+        print(f"Error: Could not convert keys to integers. {e}")
+
+
+def write_tags(data):
+    try:
+        with open(TAGS_JSON, 'w', encoding='utf-8') as file:
+            json.dump(data, file, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error: Could not write to file. {e}")

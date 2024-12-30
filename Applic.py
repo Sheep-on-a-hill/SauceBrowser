@@ -124,23 +124,6 @@ def code_read():
     return dm.load_codes_json()
 
 
-def tag_read():
-    """Read and return a list of tags from TAGS_FILE (each line is a (tag_id, tag_name) tuple)."""
-    if not os.path.exists(TAGS_FILE):
-        return []
-    tags = []
-    with open(TAGS_FILE, "r", encoding="utf-8") as file:
-        for line in file:
-            line = line.strip()
-            if line:
-                try:
-                    tup = ast.literal_eval(line)
-                    tags.append(tup)
-                except ValueError:
-                    pass
-    return tags
-
-
 
 # --------------------
 # Application Classes
@@ -216,7 +199,7 @@ class MultiPageApp:
         # e.g. if self.settings["app"]["auto_update"]: 
         #        do_something()
 
-        self.tags = tag_read()
+        self.tags = dm.read_tags()
         await asyncio.sleep(1)
 
     def initialize_ui(self):
@@ -551,7 +534,6 @@ class HomePage(ttk.Frame):
         self.code_progress_entry.insert(0, code)
 
     def update_page(self):
-        print('here')
         self.in_progress_dict = self.load_in_progress_data()
         self.in_progress = list(self.in_progress_dict.keys())
         
@@ -1018,9 +1000,8 @@ class PageThree(ttk.Frame):
         self.search_button.pack(side=tk.LEFT, padx=5)
 
         # Initialize banned tags
-        self.banned_tag = self.controller.settings['banned']['tags']
-        self.banned_tag_codes = [t[0] for t in self.banned_tag]
-        self.banned_tag_names = [t[1] for t in self.banned_tag]
+        self.banned_tag_codes = self.controller.settings['banned']['tags']
+        self.banned_tag_names = [self.controller.tags[key] for key in self.banned_tag_codes]
         
         # Checkbox to hide banned label
         self.hide_banned = tk.BooleanVar(value=False)
@@ -1313,18 +1294,18 @@ class PageThree(ttk.Frame):
 
         start_index = self.current_page * self.items_per_page
         end_index = start_index + self.items_per_page
-        page_items = self.filtered_tags[start_index:end_index]
+        page_items = list(self.filtered_tags.items())[start_index:end_index]
 
         rows, cols = 6, 4
-        for idx, tag_data in enumerate(page_items):
+        for idx, (tag_code, tag_name) in enumerate(page_items):
             r = idx // cols
             c = idx % cols
             button = tk.Button(
                 self.items_frame,
-                text=str(tag_data[1]),
+                text=str(tag_name),
                 compound="center",
                 font=("Arial", 12),
-                command=lambda val=tag_data: self.ban_tag(val)
+                command=lambda code=tag_code, name=tag_name: self.ban_tag((code, name))
             )
             button.grid(row=r, column=c, padx=10, pady=10, sticky="nsew")
 
@@ -1350,11 +1331,11 @@ class PageThree(ttk.Frame):
         if tag_code not in self.banned_tag_codes:
             self.banned_tag_codes.append(tag_code)
             self.banned_tag_names.append(tag_name)
-            self.controller.settings['banned']['tags'].append(tag)
+            self.controller.settings['banned']['tags'].append(tag_code)
         else:
             self.banned_tag_codes.remove(tag_code)
             self.banned_tag_names.remove(tag_name)
-            self.controller.settings['banned']['tags'].remove(tag)
+            self.controller.settings['banned']['tags'].remove(tag_code)
         dm.write_settings(self.controller.settings)
         if not self.search_entry.get().strip():
             self._reset_search()
@@ -1365,7 +1346,7 @@ class PageThree(ttk.Frame):
         """Filter tags based on the search query."""
         query = self.search_entry.get().lower()
         if query:
-            self.filtered_tags = [tag for tag in self.controller.tags if query in tag[1].lower()]
+            self.filtered_tags = {key: value for key, value in self.controller.tags.items() if query in value.lower()}
         else:
             self.filtered_tags = self.controller.tags
         self.current_page = 0
@@ -1420,7 +1401,7 @@ class PageFour(ttk.Frame):
         favorites = dm.load_favorite_json()
         self.favorites_label.config(text=f"Favorites: {len(favorites)}")
 
-        tags_list = tag_read()
+        tags_list = dm.read_tags()
         self.tags_label.config(text=f"Tags: {len(tags_list)}")
 
         banned = self.controller.settings['banned']['tags']
