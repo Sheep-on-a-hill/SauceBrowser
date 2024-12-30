@@ -32,10 +32,12 @@ DEFAULT_SETTINGS = {
     },
     "banned": {
         "tags": [
-            [19440, "lolicon"],
-            [32341, "shotacon"]
+            19440,
+            32341
         ]
     },
+    "in_progress":{
+        },
     "images": False
 }
 
