@@ -4,3 +4,5 @@ Tester.py
 /__pycache__/
 /logs/
 /.spyproject/
+Info/favorite_codes.json
+Info/settings.json
