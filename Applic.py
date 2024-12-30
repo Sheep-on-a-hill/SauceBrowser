@@ -18,6 +18,7 @@ import threading
 
 # Import your data manager
 import data_manager_json as dm
+from TagFinder import tag_fetch
 
 
 # --------------------
@@ -987,6 +988,9 @@ class PageThree(ttk.Frame):
 
         self.next_button = ttk.Button(self.nav_frame, text="Next", command=self.next_page)
         self.next_button.grid(row=0, column=1, padx=10, pady=10)
+        
+        self.tag_update_button = ttk.Button(self.nav_frame, text="Update tags", command=self.start_tag_fetch)
+        self.tag_update_button.grid(row=0, column=5, padx=10, pady=10)
 
         # Load tags
         self.filtered_tags = self.controller.tags
@@ -1038,6 +1042,38 @@ class PageThree(ttk.Frame):
         self.update_list_button.pack(side=tk.LEFT, padx=10)
         
         self.update_page()
+        
+    def start_tag_fetch(self):
+        """Start the async tag fetch process with a loading indicator."""
+        self.progress_window = Toplevel(self)
+        self.progress_window.title("Fetching Tags")
+        self.progress_window.geometry("400x100")
+
+        label = ttk.Label(self.progress_window, text="Fetching tags, please wait...")
+        label.pack(pady=10)
+
+        self.progress_bar = Progressbar(self.progress_window, length=300, mode="indeterminate")
+        self.progress_bar.pack(pady=5)
+        self.progress_bar.start()
+
+        def run_tag_fetch():
+            asyncio.run(self.fetch_tags())
+
+        threading.Thread(target=run_tag_fetch, daemon=True).start()
+
+    async def fetch_tags(self):
+        try:
+            await tag_fetch()
+            logging.info("Tag fetching completed.")
+        except Exception as e:
+            logging.error(f"Error during tag fetching: {e}")
+        finally:
+            self.progress_bar.stop()
+            self.progress_window.destroy()
+            
+            self.controller.tags = dm.read_tags()
+            self.filtered_tags = self.controller.tags
+            self.update_page()
         
     def toggle_banned_label(self):
         """Show or hide the banned label based on the checkbox state."""

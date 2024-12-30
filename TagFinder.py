@@ -1,61 +1,59 @@
+import asyncio
 import requests
 from bs4 import BeautifulSoup
-import sys
+import logging
+import os
+import data_manager_json as dm
 
-url_base = 'https://nhentai.net/tags/?page='
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# with open('sauce_codes.txt', 'r') as file:
-#     codes = file.readlines()
-#     codes = [int(i) for i in codes]
-#     codes.sort()
-# if len(codes) > 0:
-#     LastEntry = codes[-1]
-# else:
-#     LastEntry = 0
+# Constants
+URL_BASE = 'https://nhentai.net/tags/?page='
+OUTPUT_FILE = "tags.txt"
 
-#Find total pages of tags
-
-response = requests.get(url_base + '1')
-soup = BeautifulSoup(response.text, 'html.parser')
-
-lastPage = soup.find('a', class_='last').get('href')
-lastPage = int(lastPage.split('=')[-1])
-
-
-tags_container = soup.find('div', id='tag-container')
-tags = tags_container.find_all('a')
-
-Tag_tuple_list = []
-
-
-for i in range(lastPage+1):
-    url = url_base+str(i+1)
+def get_last_page():
+    """Fetch the last page number of the tags section."""
     try:
-        response = requests.get(url)
-        response.raise_for_status() # Check for HTTP request errors 
+        response = requests.get(URL_BASE + '1', timeout=10)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+        last_page = soup.find('a', class_='last').get('href')
+        return int(last_page.split('=')[-1])
+    except Exception as e:
+        logging.error(f"Failed to fetch last page: {e}")
+        return 1  # Fallback to single page
+
+async def fetch_tags_from_page(page):
+    """Fetch tags from a single page and return them as a dictionary."""
+    try:
+        url = f"{URL_BASE}{page}"
+        response = await asyncio.to_thread(requests.get, url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
         tags_container = soup.find('div', id='tag-container')
         tags = tags_container.find_all('a')
-        
-        #Parse through
-        for j in tags:
-            temp = j.get('class')[-1]
-            tag_code = int(temp.split('-')[-1])
-            tag_name = j.find('span').text
-            Tag_tuple_list.append((tag_code, tag_name))
-       
-        
-           
-       
-           
-    except requests.exceptions.HTTPError:
-        #if count > LastEntry:
-            #exit_loop += 1
-        print(f'404 no website on {url}')
-        break
+        return {
+            int(tag.get('class')[-1].split('-')[-1]): tag.find('span').text
+            for tag in tags
+        }
+    except Exception as e:
+        logging.error(f"Failed to fetch tags from page {page}: {e}")
+        return {}
 
+async def tag_fetch():
+    """Main function to fetch and save all tags."""
+    last_page = get_last_page()
+    logging.info(f"Fetching tags from {last_page} pages...")
 
-with open("tags.txt", "w") as file:
-    for tup in Tag_tuple_list:
-        file.write(str(tup)+'\n')
+    all_tags = {}
+    tasks = [fetch_tags_from_page(page) for page in range(1, last_page + 1)]
+    results = await asyncio.gather(*tasks)
+
+    for tags in results:
+        all_tags.update(tags)
+
+    if all_tags:
+        dm.write_tags(all_tags)
+    else:
+        logging.warning("No tags fetched. Please check the website or your connection.")
