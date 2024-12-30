@@ -181,9 +181,6 @@ def write_settings(settings):
     """
     Write settings dict back to file, making sure banned tags are lists of lists.
     """
-    # Convert banned tags to a JSON-compatible format
-    if "banned" in settings and "tags" in settings["banned"]:
-        settings["banned"]["tags"] = [list(tag) for tag in settings["banned"]["tags"]]
 
     # Ensure the directory exists
     os.makedirs(os.path.dirname(SETTINGS_JSON), exist_ok=True)
