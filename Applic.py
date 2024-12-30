@@ -22,7 +22,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageTk
 
 import tkinter as tk
-from tkinter import ttk, Toplevel
+from tkinter import ttk, Toplevel, messagebox
 from tkinter.ttk import Progressbar
 from ttkthemes import ThemedTk
 
@@ -252,7 +252,7 @@ class MultiPageApp:
         self.style_menu = tk.Menu(self.root)
         self.root.config(menu=self.style_menu)
         self.theme_menu = tk.Menu(self.style_menu, tearoff=0)
-        self.style_menu.add_cascade(label="Themes", menu=self.theme_menu)
+        self.style_menu.add_cascade(label="File", menu=self.theme_menu)
         self.theme_menu.add_command(label='Options', command=self.open_theme_selector)
 
         # Create the notebook
@@ -312,17 +312,12 @@ class MultiPageApp:
         """Open the theme selector popup."""
         ThemeSelectorPopup(self)
 
-
-# --------------------
-# Popup for Theme Selection
-# --------------------
-
 class ThemeSelectorPopup(tk.Toplevel):
     def __init__(self, controller):
         super().__init__(controller.root)
         self.controller = controller
-        self.title("Theme Selector")
-        self.geometry("300x200")
+        self.title("Options")
+        self.geometry("300x300")
 
         self.style = ttk.Style(self.controller.root)
         bg_color = self.style.lookup("TFrame", "background") or "SystemButtonFace"
@@ -343,8 +338,8 @@ class ThemeSelectorPopup(tk.Toplevel):
         apply_button = ttk.Button(self, text="Apply Theme", command=self.apply_theme)
         apply_button.pack(pady=10)
 
-        close_button = ttk.Button(self, text="Close", command=self.destroy)
-        close_button.pack(pady=10)
+        reset_button = ttk.Button(self, text="Reset Codes", command=self.reset_code_visible)
+        reset_button.pack()
 
     def apply_theme(self):
         new_theme = self.selected_theme.get()
@@ -358,6 +353,20 @@ class ThemeSelectorPopup(tk.Toplevel):
         # Update the popup's background to the new theme color
         bg_color = self.style.lookup("TFrame", "background") or "SystemButtonFace"
         self.configure(bg=bg_color)
+
+    def reset_code_visible(self):
+        # Confirmation dialog
+        confirm = messagebox.askyesno(
+            "Confirm Reset",
+            "Are you sure you want to reset all codes? This action cannot be undone."
+        )
+        if confirm:
+            all_keys = list(self.controller.full_list.keys())
+            for key in all_keys:
+                self.controller.full_list[key]['visible'] = 1
+            dm.save_codes_json(self.controller.full_list)
+            messagebox.showinfo("Reset Complete", "All codes have been reset successfully.")
+
 
 
 # --------------------
