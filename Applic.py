@@ -939,7 +939,7 @@ class PageTwo(ttk.Frame):
         ]
 
         # Grid up to 6 rows x 4 columns = 24
-        rows, cols = 6, 4
+        cols = 4
         for idx, code_val in enumerate(page_items):
             r = idx // cols
             c = idx % cols
@@ -1256,7 +1256,7 @@ class PageThree(ttk.Frame):
                         continue
 
                     # If brand-new code
-                    if code_val not in self.controller.master_list:
+                    if code_val not in self.controller.master_list and self.controller.settings['images']:
                         self.controller.full_list[code_val] = {'tags': tag_ids, 'visible': 1}
                         await asyncio.to_thread(scrape_images, code_val, COVERS_DIR)
 
@@ -1340,7 +1340,7 @@ class PageThree(ttk.Frame):
                         continue
 
                     # If brand-new, add it
-                    if code_val not in self.controller.full_list:
+                    if code_val not in self.controller.full_list and self.controller.settings['images']:
                         self.controller.full_list[code_val] = {'tags': tag_ids, 'visible': 1}
                         await asyncio.to_thread(scrape_images, code_val, COVERS_DIR)
 
@@ -1369,7 +1369,7 @@ class PageThree(ttk.Frame):
         end_index = start_index + self.items_per_page
         page_items = list(self.filtered_tags.items())[start_index:end_index]
 
-        rows, cols = 6, 4
+        cols = 4
         for idx, (tag_code, tag_name) in enumerate(page_items):
             r = idx // cols
             c = idx % cols
