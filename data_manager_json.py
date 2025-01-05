@@ -67,9 +67,11 @@ def load_codes_json():
     for code_str, obj in raw_dict.items():
         code_int = int(code_str)
         tags_list = obj.get("tags", [])
+        cover = obj.get("cover", "")
         visible_val = obj.get("visible", 1)
         final_dict[code_int] = {
             "tags": set(tags_list),
+            "cover": cover,
             "visible": visible_val
         }
     return final_dict
@@ -89,8 +91,10 @@ def save_codes_json(codes_dict):
     for code_int, data_obj in codes_dict.items():
         tags_set = data_obj.get("tags", set())
         visible_val = data_obj.get("visible", 1)
+        cover_url = data_obj.get("cover", "")
         out_dict[str(code_int)] = {
             "tags": list(tags_set),
+            "cover": cover_url,
             "visible": visible_val
         }
 

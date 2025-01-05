@@ -1,7 +1,8 @@
 """
 Sauce Selector Application
 
-Refactored to improve readability, reduce duplication, and structure the code.
+Refactored to improve readability, reduce duplication, 
+and structure the code with a fully asynchronous CoverLoader.
 """
 
 # --------------------
@@ -15,6 +16,9 @@ import subprocess
 import logging
 import asyncio
 import threading
+import aiohttp
+from urllib.parse import urljoin
+from io import BytesIO
 
 # Third-party
 import requests
@@ -29,7 +33,6 @@ from ttkthemes import ThemedTk
 # Local modules
 import data_manager_json as dm
 from TagFinder import tag_fetch
-
 
 # --------------------
 # Constants & Globals
@@ -58,10 +61,111 @@ TIMEOUT = NETWORK_CFG["timeout"]
 PROXY_URL = NETWORK_CFG["proxy"]
 PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
+CONCURRENT_FETCHES = 5  # Limit how many cover-URL fetches happen at once
+
 
 # --------------------
-# Helper Functions
+# Helper Classes & Functions
 # --------------------
+
+class CoverLoader:
+    """
+    An asynchronous cover loader that:
+      - Retrieves cover URLs for nhentai codes.
+      - Caches results to avoid refetching.
+      - Uses a semaphore to limit concurrency.
+    """
+
+    def __init__(self):
+        self.cover_cache = {}            # code -> cover_url (string or None)
+        self.session = None              # aiohttp.ClientSession (created lazily)
+        self.sem = asyncio.Semaphore(CONCURRENT_FETCHES)
+        self._session_lock = asyncio.Lock()
+
+    async def open_session(self):
+        """Create the aiohttp session if not already open."""
+        async with self._session_lock:  # Ensure only one task can open the session at a time
+            if not self.session:
+                timeout = aiohttp.ClientTimeout(total=TIMEOUT)
+                self.session = aiohttp.ClientSession(timeout=timeout)
+                logging.info("aiohttp session opened.")
+            else:
+                logging.debug("Session already open.")
+
+    async def close_session(self):
+        """Close the aiohttp session if open."""
+        if self.session:
+            await self.session.close()
+            self.session = None
+            logging.info("aiohttp session closed.")
+        else:
+            logging.warning("No session to close.")
+
+    async def fetch_cover_url(self, code: int) -> str:
+        """
+        Low-level async method that does the actual HTTP get to nhentai.net/g/<code>
+        and parses out the cover URL. Retries up to RETRY_ATTEMPTS.
+        """
+        url = f"https://nhentai.net/g/{code}/"
+
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                async with self.session.get(url, proxy=PROXY_URL) as resp:
+                    if resp.status != 200:
+                        logging.warning(f"[fetch_cover_url] Failed to fetch {url} (status: {resp.status}).")
+                        return None
+
+                    html = await resp.text()
+                    soup = BeautifulSoup(html, "html.parser")
+
+                    img_tags = soup.find_all("img")
+                    if len(img_tags) < 2:
+                        logging.warning(f"[fetch_cover_url] No suitable images found for code {code}.")
+                        return None
+
+                    # Typically, the second <img> is the cover
+                    img_tag = img_tags[1]
+                    img_url = (
+                        img_tag.get("data-src")
+                        or img_tag.get("data-lazy-src")
+                        or img_tag.get("data-original")
+                        or img_tag.get("src")
+                    )
+
+                    # Ensure it's an absolute URL
+                    if img_url and not img_url.startswith("http"):
+                        img_url = urljoin(url, img_url)
+
+                    # logging.info(f"[fetch_cover_url] Found cover image for code {code}: {img_url}")
+                    return img_url
+
+            except Exception as e:
+                logging.error(f"[fetch_cover_url] Attempt {attempt+1}: Failed to fetch {url}: {e}")
+
+        logging.error(f"[fetch_cover_url] All attempts failed for code {code}.")
+        return None
+
+    async def load_cover_image_if_needed(self, code: int) -> str:
+        """
+        Public method to get the cover URL for a given code.
+          - Checks our in-memory cache first.
+          - If missing, fetches with fetch_cover_url (sem-protected).
+        Returns the cover URL or None if it fails.
+        """
+        if code in self.cover_cache:
+            return self.cover_cache[code]
+
+        # Make sure we have a session
+        await self.open_session()
+
+        # Limit concurrency via semaphore
+        async with self.sem:
+            cover_url = await self.fetch_cover_url(code)
+
+        # Cache it (even if None) so we don't keep retrying
+        self.cover_cache[code] = cover_url
+        return cover_url
+
 
 def open_in_browser(code, page=None):
     """
@@ -73,26 +177,27 @@ def open_in_browser(code, page=None):
     subprocess.run([r"C:\Program Files\Mozilla Firefox\firefox.exe", "--private-window", url])
 
 
-def load_cover_image_if_needed(code, size=(100, 150), load_images=True):
+def load_cover_image_sync(cover_url, size=(100, 150), load_images=True):
     """
-    Check if cover image for `code` exists. If not, scrape it.
-    Then return a PIL ImageTk.PhotoImage if `load_images` is True, else None.
+    Synchronous helper to download cover bytes (if `load_images`), 
+    then return a PIL ImageTk.PhotoImage. If `cover_url` is None or fetch fails, returns None.
     """
-    if not load_images:
+    if not load_images or not cover_url:
         return None
+    
 
-    image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
+    try:
+        resp = requests.get(cover_url, timeout=TIMEOUT, proxies=PROXIES)
+        if resp.status_code != 200:
+            logging.warning(f"Failed to download image from {cover_url}")
+            return None
 
-    if not os.path.exists(image_path):
-        scrape_images(code, COVERS_DIR)
-
-    if os.path.exists(image_path):
-        try:
-            img = Image.open(image_path).resize(size)
-            return ImageTk.PhotoImage(img)
-        except Exception as e:
-            logging.error(f"Error loading image '{image_path}': {e}")
-    return None
+        image_data = BytesIO(resp.content)
+        image = Image.open(image_data).resize(size)
+        return ImageTk.PhotoImage(image)
+    except Exception as e:
+        logging.error(f"Error loading image from '{cover_url}': {e}")
+        return None
 
 
 def get_name(code):
@@ -115,56 +220,6 @@ def get_name(code):
     return "Unknown Name"
 
 
-def scrape_images(code, output_folder):
-    """
-    Scrape and save cover image for `code` in `output_folder`.
-    Uses the global network config for retries and proxy.
-    """
-    url = f"https://nhentai.net/g/{code}/"
-    image_path = os.path.join(output_folder, f"{code}.jpg")
-
-    # If it already exists, don't fetch again.
-    if os.path.exists(image_path):
-        return
-
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-
-    for attempt in range(RETRY_ATTEMPTS):
-        try:
-            resp = requests.get(url, timeout=TIMEOUT, proxies=PROXIES)
-            if resp.status_code != 200:
-                logging.warning(f"Failed to fetch {url}")
-                return
-
-            soup = BeautifulSoup(resp.content, "html.parser")
-            img_tags = soup.find_all("img")
-            if len(img_tags) < 2:
-                logging.warning(f"No suitable images found for code {code}")
-                return
-
-            # The second <img> is typically the cover
-            img_tag = img_tags[1]
-            img_url = (
-                img_tag.get("data-src")
-                or img_tag.get("data-lazy-src")
-                or img_tag.get("data-original")
-                or img_tag.get("src")
-            )
-
-            # Ensure it's an absolute URL
-            if not img_url.startswith("http"):
-                img_url = requests.compat.urljoin(url, img_url)
-
-            img_data = requests.get(img_url, timeout=TIMEOUT, proxies=PROXIES).content
-            with open(image_path, "wb") as img_file:
-                img_file.write(img_data)
-            logging.info(f"Downloaded cover for code {code} -> {image_path}")
-            return
-        except Exception as e:
-            logging.error(f"Attempt {attempt+1}: Failed to download cover {url}: {e}")
-
-
 def code_read():
     """Return a dict {code: {...}} from JSON (the main data)."""
     return dm.load_codes_json()
@@ -184,7 +239,7 @@ def get_tags(banned_tags):
 
 class MultiPageApp:
     """
-    Main application. Houses the Tk root, overall settings, and pages.
+    Main application. Houses the Tk root, overall settings, pages, etc.
     """
 
     def __init__(self):
@@ -195,7 +250,12 @@ class MultiPageApp:
         INFO_DIR = self.settings["paths"]["info_directory"]
         os.makedirs(INFO_DIR, exist_ok=True)
 
-        # Initialize ThemedTk
+        # 1) Create a background asyncio event loop
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+        # 2) Initialize ThemedTk
         self.root = ThemedTk(theme=self.settings["theme"]["name"])
         default_size = self.settings["app"].get("window_size", "400x510")
         self.root.geometry(default_size)
@@ -220,7 +280,14 @@ class MultiPageApp:
 
         self.current_theme = self.settings['theme']['name']
 
-        # Run data loading in a background thread
+        # 3) Create the CoverLoader (async) for retrieving cover URLs
+        self.cover_loader = CoverLoader()
+
+        # Open the aiohttp session asynchronously
+        future = asyncio.run_coroutine_threadsafe(self.cover_loader.open_session(), self.loop)
+        future.result()
+
+        # 4) Run data loading in a background thread
         threading.Thread(target=self.load_data_async, args=(self.master_list,)).start()
 
     def list_update(self, codes_dict):
@@ -233,8 +300,11 @@ class MultiPageApp:
     def load_data_async(self, codes_dict):
         """Load data in a separate thread, then init UI on main thread."""
         try:
-            asyncio.run(self.load_data(codes_dict))
-            self.root.after(0, self.initialize_ui)  # Schedule UI init
+            # Instead of asyncio.run(...), use a separate function that we can call directly
+            # or schedule with run_coroutine_threadsafe
+            future = asyncio.run_coroutine_threadsafe(self.load_data(codes_dict), self.loop)
+            future.result()  # Wait for completion
+            self.root.after(0, self.initialize_ui)  # Schedule UI init in the main Tk thread
         except Exception as e:
             logging.error(f"Error loading data: {e}", exc_info=True)
 
@@ -243,7 +313,8 @@ class MultiPageApp:
         Example spot for background tasks like auto-updates.
         """
         self.tags = dm.read_tags()
-        await asyncio.sleep(1)  # Simulate delay if needed
+        # Optionally, await a small delay
+        await asyncio.sleep(1)
 
     def initialize_ui(self):
         self.loading_label.destroy()
@@ -308,9 +379,21 @@ class MultiPageApp:
     def mainloop(self):
         self.root.mainloop()
 
+        # On exit, close the aiohttp session (if open) using the background loop
+        try:
+            future = asyncio.run_coroutine_threadsafe(self.cover_loader.close_session(), self.loop)
+            future.result()
+        except:
+            pass
+
+        # Stop the background loop
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join()
+
     def open_theme_selector(self):
         """Open the theme selector popup."""
         ThemeSelectorPopup(self)
+
 
 class ThemeSelectorPopup(tk.Toplevel):
     def __init__(self, controller):
@@ -366,7 +449,6 @@ class ThemeSelectorPopup(tk.Toplevel):
                 self.controller.full_list[key]['visible'] = 1
             dm.save_codes_json(self.controller.full_list)
             messagebox.showinfo("Reset Complete", "All codes have been reset successfully.")
-
 
 
 # --------------------
@@ -452,30 +534,55 @@ class HomePage(ttk.Frame):
             btn_height = 8
             btn_width = 10
 
-        # Load images once
+        # Prepare list to store PhotoImage objects (so they don't get GC'd)
         self.images = []
-        for code_str in self.in_progress:
-            self.images.append(load_cover_image_if_needed(
-                code_str, 
-                (100, 150), 
-                load_images=self.controller.settings['images'])
-            )
 
-        # Create a button for each in-progress item
-        for idx, code in enumerate(self.in_progress):
+        # For each code in in_progress, load the cover URL using the background loop
+        for idx, code_str in enumerate(self.in_progress):
+            code_int = int(code_str)
+            
+            cover_url = self.controller.full_list.get(code_int, {}).get('cover')
+            if cover_url is None or cover_url == "":
+                cover_url = self.get_cover_url_sync(code_int)
+                self.controller.full_list[code_int]['cover'] = cover_url
+                
+            image_path = os.path.join(COVERS_DIR, f"{code_int}.jpg")
+            if os.path.exists(image_path):
+                img = Image.open(image_path).resize((100, 150))
+                photo_img = ImageTk.PhotoImage(img)
+                
+            else:
+                photo_img = load_cover_image_sync(
+                    cover_url,
+                    size=(100, 150),
+                    load_images=self.controller.settings['images']
+                )
+            self.images.append(photo_img)
+
             row = (idx // 6) + 1
             col = idx % 6
             button = tk.Button(
                 self.in_progress_frame,
-                text=str(code),
+                text=str(code_str),
                 image=self.images[idx],
                 compound="center",
                 font=("Arial", 12),
                 width=btn_width,
                 height=btn_height,
-                command=lambda c=(code, self.in_progress_dict[code]): self.open_in_progress_code(c)
+                command=lambda c=(code_str, self.in_progress_dict[code_str]): self.open_in_progress_code(c)
             )
             button.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+
+    def get_cover_url_sync(self, code_int):
+        """
+        Schedule load_cover_image_if_needed(code_int) on the background loop
+        and block until it returns. This avoids calling asyncio.run(...).
+        """
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.cover_loader.load_cover_image_if_needed(code_int),
+            self.controller.loop
+        )
+        return future.result()
 
     def create_completion_frame(self, parent):
         """Sub-frame for specifying page number when marking incomplete progress."""
@@ -674,6 +781,7 @@ class PageOne(ttk.Frame):
         self.search_frame.pack(pady=5)
 
         self.filter_entry = ttk.Entry(self.search_frame, width=20)
+        self.filter_entry.bind("<Return>", lambda event: self.apply_filter())
         self.filter_entry.pack(side=tk.LEFT, padx=5)
         self.filter_entry.insert(0, "")
 
@@ -705,8 +813,34 @@ class PageOne(ttk.Frame):
 
         self.loading_label = ttk.Label(self, text="")
         self.loading_label.pack(pady=5)
+        
+        # Right-click menu
+        self.current_button = None
+        self.popup_menu = tk.Menu(self, tearoff=0)
+        self.popup_menu.add_command(label="Remove", command=self.hide_code)
 
         self.update_page()
+        
+    def show_popup(self, event):
+        self.current_button = event.widget
+        self.popup_menu.tk_popup(event.x_root, event.y_root)
+        
+    def hide_code(self):
+        if self.current_button is None:
+            return
+        code = getattr(self.current_button, 'code_val', None)
+        if code is None:
+            return
+        self.controller.full_list[int(code)]['visible'] = 0
+        dm.save_codes_json(self.controller.full_list)
+        self.current_button.destroy()
+
+    def get_cover_url_sync(self, code_int):
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.cover_loader.load_cover_image_if_needed(code_int),
+            self.controller.loop
+        )
+        return future.result()
 
     def apply_filter(self):
         """
@@ -714,9 +848,12 @@ class PageOne(ttk.Frame):
         """
         query = self.filter_entry.get().lower()
         if query:
-            # Filter out tags that match user text
-            matched_tags = [tag for tag in self.controller.tags if query in tag[1].lower()]
-            self.search_filter = [t[0] for t in matched_tags]
+            matched_tags = {
+                key: value
+                for key, value in self.controller.tags.items()
+                if query in value.lower()
+            }
+            self.search_filter = list(matched_tags.keys())          
         else:
             self.search_filter = []
         self.update_page()
@@ -770,20 +907,34 @@ class PageOne(ttk.Frame):
             return
 
         selected_codes = random.sample(filtered_codes, min(6, len(filtered_codes)))
-        self.images = [
-            load_cover_image_if_needed(
-                c,
-                size=(self.button_width, self.button_height),
-                load_images=self.controller.settings['images']
-            )
-            for c in selected_codes
-        ]
+        self.images = []
+
+        # For each code, fetch cover URL from background loop, then load the image sync
+        for code_val in selected_codes:
+            cover_url = self.controller.full_list.get(code_val, {}).get('cover')
+            if cover_url is None or cover_url == "":
+                cover_url = self.get_cover_url_sync(code_val)
+                self.controller.full_list[code_val]['cover'] = cover_url
+                
+            image_path = os.path.join(COVERS_DIR, f"{code_val}.jpg")
+            if os.path.exists(image_path):
+                img = Image.open(image_path).resize((self.button_width, self.button_height))
+                photo_img = ImageTk.PhotoImage(img)
+                
+            else:
+                photo_img = load_cover_image_sync(
+                    cover_url,
+                    size=(self.button_width, self.button_height),
+                    load_images=self.controller.settings['images']
+                )
+            self.images.append(photo_img)
 
         # Grid config
         for row in range(2):
             self.code_buttons_frame.rowconfigure(row, weight=0, minsize=self.button_height)
         for col in range(3):
             self.code_buttons_frame.columnconfigure(col, weight=0, minsize=self.button_width)
+            
 
         # Create buttons
         for idx, code_val in enumerate(selected_codes):
@@ -800,6 +951,10 @@ class PageOne(ttk.Frame):
                 command=lambda val=code_val: self.open_code(val)
             )
             button.grid(row=row, column=col, padx=10, pady=10, sticky="nsew")
+            # Right-click binding
+            button.bind("<Button-3>", self.show_popup)
+            # Store code on the button so we can retrieve it easily
+            button.code_val = code_val
 
         self.loading_label.config(text="")
         self.controller.adjust_window_size()
@@ -873,6 +1028,13 @@ class PageTwo(ttk.Frame):
 
         self.apply_filters()
 
+    def get_cover_url_sync(self, code_int):
+        future = asyncio.run_coroutine_threadsafe(
+            self.controller.cover_loader.load_cover_image_if_needed(code_int),
+            self.controller.loop
+        )
+        return future.result()
+
     def apply_filters(self):
         """Load favorites, filter by name/tag, then sort by user preference."""
         self.favorites_dict = dm.load_favorite_json()
@@ -938,14 +1100,35 @@ class PageTwo(ttk.Frame):
             btn_height = 8
             btn_width = 10
 
-        self.images = [
-            load_cover_image_if_needed(
-                code,
-                size=(btn_width, btn_height),
-                load_images=self.controller.settings['images']
-            )
-            for code in page_items
-        ]
+        self.images = []
+        for code in page_items:
+            try:
+                self.controller.full_list[code]
+            except:
+                self.controller.full_list[code] = {
+                    "tags": [
+                    ],
+                    "cover": "",
+                    "visible": 1
+                    }
+  
+            cover_url = self.controller.full_list.get(code, {}).get('cover')
+            if cover_url is None or cover_url == "":
+                cover_url = self.get_cover_url_sync(code)
+                self.controller.full_list[code]['cover'] = cover_url
+
+            image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
+            if os.path.exists(image_path):
+                img = Image.open(image_path).resize((100, 150))
+                photo_img = ImageTk.PhotoImage(img)
+                
+            else:
+                photo_img = load_cover_image_sync(
+                    cover_url,
+                    size=(100, 150),
+                    load_images=self.controller.settings['images']
+                )
+            self.images.append(photo_img)
 
         # Grid up to 6 rows x 4 columns = 24
         cols = 4
@@ -968,7 +1151,11 @@ class PageTwo(ttk.Frame):
             )
             button.pack()
             label.pack(pady=(0, 10))
+
+            # Right-click binding
             button.bind("<Button-3>", self.show_popup)
+            # Store code on the button so we can retrieve it easily
+            button.code_val = code_val
 
         # Pagination controls
         self.prev_button.config(state=tk.NORMAL if self.current_page > 0 else tk.DISABLED)
@@ -1000,14 +1187,16 @@ class PageTwo(ttk.Frame):
         """
         if self.current_button is None:
             return
-        code = int(self.current_button.cget("text"))
+        code = getattr(self.current_button, 'code_val', None)
+        if code is None:
+            return
 
         fav_dict = dm.load_favorite_json()
         if code in fav_dict:
             del fav_dict[code]
             dm.save_favorites_json(fav_dict)
 
-        # Re-apply filters to remain consistent with current searches
+        # Re-apply filters
         self.apply_filters()
 
     def find_tag_id(self, tag_input):
@@ -1039,9 +1228,9 @@ class PageThree(ttk.Frame):
         self.search_frame = ttk.Frame(self)
         self.items_frame = ttk.Frame(self)
 
-        self.banned_frame.pack(pady=5, fill = 'x')
-        self.banned_labels_frame.pack(side=tk.TOP, pady=10, fill = 'x')
-        self.search_frame.pack(pady=(15,5), fill = 'x')
+        self.banned_frame.pack(pady=5, fill='x')
+        self.banned_labels_frame.pack(side=tk.TOP, pady=10, fill='x')
+        self.search_frame.pack(pady=(15, 5), fill='x')
         self.items_frame.pack(pady=10)
 
         # Navigation frame
@@ -1122,8 +1311,10 @@ class PageThree(ttk.Frame):
         self.progress_bar.pack(pady=5)
         self.progress_bar.start()
 
+        # Instead of asyncio.run, we schedule coroutines in the background loop
         def run_tag_fetch():
-            asyncio.run(self.fetch_tags())
+            future = asyncio.run_coroutine_threadsafe(self.fetch_tags(), self.controller.loop)
+            future.result()
 
         threading.Thread(target=run_tag_fetch, daemon=True).start()
 
@@ -1146,8 +1337,8 @@ class PageThree(ttk.Frame):
     def toggle_banned_label(self):
         """Show or hide the Banned Tags label."""
         if self.hide_banned.get():
-            self.banned_label.pack_forget()
             self.banned_title.pack_forget()
+            self.banned_label.pack_forget()
         else:
             self.banned_title.pack(side=tk.LEFT, padx=5)
             self.banned_label.pack(side=tk.LEFT, padx=5)
@@ -1173,7 +1364,9 @@ class PageThree(ttk.Frame):
         self.progress_bar.pack(pady=5)
 
         def run_in_bg():
-            asyncio.run(scrape_func(update))
+            # Instead of asyncio.run, schedule in background loop
+            future = asyncio.run_coroutine_threadsafe(scrape_func(update), self.controller.loop)
+            future.result()
 
         threading.Thread(target=run_in_bg, daemon=True).start()
         self._check_scrape_progress()
@@ -1196,17 +1389,17 @@ class PageThree(ttk.Frame):
 
     async def _scrape_async(self, update):
         """
-        Full scraping from page 1..N (English, minus banned tags).
-        Save new codes, scrape covers, etc.
+        Full scraping from page 1..N (English, minus banned tags), 
+        saving new codes, covers, etc. 
+        Uses the shared CoverLoader for cover URLs.
         """
         url_base = "https://nhentai.net/search/?q=english"
         for tag_name in self.banned_tag_names:
-            url_base += f'+-{tag_name}'
-        url_first = url_base + '&page=1'
+            url_base += f"+-{tag_name}"
+        url_first = f"{url_base}&page=1"
 
-        # Step 1: find last page
         try:
-            first_resp = await asyncio.to_thread(requests.get, url_first)
+            first_resp = await asyncio.to_thread(requests.get, url_first, proxies=PROXIES, timeout=TIMEOUT)
             first_resp.raise_for_status()
         except Exception as e:
             logging.error(f"Error fetching first page: {e}")
@@ -1229,11 +1422,14 @@ class PageThree(ttk.Frame):
         self.scrape_max = last_page
         logging.info(f"Determined last_page={last_page} from the search results.")
 
-        # Step 2: loop pages
+        # Step 2: Loop pages
         for page_idx in range(1, last_page + 1):
-            url = url_base + f"&page={page_idx}"
+            page_url = f"{url_base}&page={page_idx}"
+            if page_idx % 100 == 0:
+                logging.info(f"On page {page_idx}")
+
             try:
-                resp = await asyncio.to_thread(requests.get, url)
+                resp = await asyncio.to_thread(requests.get, page_url, proxies=PROXIES, timeout=TIMEOUT)
                 resp.raise_for_status()
             except Exception as e:
                 logging.error(f"Error scraping page {page_idx}: {e}")
@@ -1241,12 +1437,12 @@ class PageThree(ttk.Frame):
 
             soup = BeautifulSoup(resp.text, "html.parser")
             comics = soup.find_all("div", class_="gallery")
+
             if not comics:
                 logging.info(f"No galleries found on page {page_idx}. Stopping early.")
                 break
 
             for comic in comics:
-                # data-tags="12345 23456 34567"
                 tag_strs = comic.get("data-tags", "").split()
                 try:
                     tag_ids = set(int(t) for t in tag_strs)
@@ -1264,35 +1460,43 @@ class PageThree(ttk.Frame):
                     except ValueError:
                         continue
 
-                    # If brand-new code
-                    if code_val not in self.controller.master_list and self.controller.settings['images']:
-                        self.controller.full_list[code_val] = {'tags': tag_ids, 'visible': 1}
-                        await asyncio.to_thread(scrape_images, code_val, COVERS_DIR)
+                    # If new, fetch cover
+                    if code_val not in self.controller.full_list:
+                        cover_url = await self.controller.cover_loader.load_cover_image_if_needed(code_val)
+                        self.controller.full_list[code_val] = {
+                            'tags': tag_ids,
+                            'cover': cover_url,
+                            'visible': 1
+                        }
+                    else:
+                        # If it existed, maybe update tags / cover
+                        self.controller.full_list[code_val]['tags'] = tag_ids
+                        if not self.controller.full_list[code_val].get('cover'):
+                            cover_url = await self.controller.cover_loader.load_cover_image_if_needed(code_val)
+                            self.controller.full_list[code_val]['cover'] = cover_url
 
-            # Update progress
             self.scrape_progress = page_idx
             await asyncio.sleep(0)
 
-        # Save and mark done
         dm.save_codes_json(self.controller.full_list)
         self.scrape_done = True
         logging.info("Scraping completed successfully.")
 
     async def update_scrape_async(self, update):
         """
-        Similar to `_scrape_async` but stops when code_val < last_code (incremental updates).
+        Incremental update: stops when code_val < last_code.
+        Uses the shared CoverLoader as well.
         """
         url_base = "https://nhentai.net/search/?q=english"
         for tag_name in self.banned_tag_names:
             url_base += f'+-{tag_name}'
-        url_first = url_base + '&page=1'
+        url_first = f"{url_base}&page=1"
 
         all_codes = self.controller.full_list.keys()
         last_code = max(all_codes) if all_codes else 0
 
-        # Attempt to find last page
         try:
-            first_resp = await asyncio.to_thread(requests.get, url_first)
+            first_resp = await asyncio.to_thread(requests.get, url_first, proxies=PROXIES, timeout=TIMEOUT)
             first_resp.raise_for_status()
         except Exception as e:
             logging.error(f"Error fetching first page: {e}")
@@ -1312,14 +1516,13 @@ class PageThree(ttk.Frame):
                 logging.warning("Failed to parse last-page number. Defaulting to 1.")
                 last_page = 1
 
-        self.scrape_max = last_code or 1
+        self.scrape_max = max(last_code, 1)
         logging.info(f"Determined last_code={last_code} from existing data.")
 
-        # Loop pages up to last_page
         for page_idx in range(1, last_page + 1):
-            url = url_base + f"&page={page_idx}"
+            url = f"{url_base}&page={page_idx}"
             try:
-                resp = await asyncio.to_thread(requests.get, url)
+                resp = await asyncio.to_thread(requests.get, url, proxies=PROXIES, timeout=TIMEOUT)
                 resp.raise_for_status()
             except Exception as e:
                 logging.error(f"Error scraping page {page_idx}: {e}")
@@ -1348,12 +1551,23 @@ class PageThree(ttk.Frame):
                     except ValueError:
                         continue
 
-                    # If brand-new, add it
-                    if code_val not in self.controller.full_list and self.controller.settings['images']:
-                        self.controller.full_list[code_val] = {'tags': tag_ids, 'visible': 1}
-                        await asyncio.to_thread(scrape_images, code_val, COVERS_DIR)
+                    # If we see code_val < last_code, break
+                    if code_val < last_code:
+                        break
 
-            # Once we've reached codes below last_code, we can break
+                    if code_val not in self.controller.full_list:
+                        cover_url = await self.controller.cover_loader.load_cover_image_if_needed(code_val)
+                        self.controller.full_list[code_val] = {
+                            'tags': tag_ids,
+                            'cover': cover_url,
+                            'visible': 1
+                        }
+                    else:
+                        self.controller.full_list[code_val]['tags'] = tag_ids
+                        if not self.controller.full_list[code_val].get('cover'):
+                            cover_url = await self.controller.cover_loader.load_cover_image_if_needed(code_val)
+                            self.controller.full_list[code_val]['cover'] = cover_url
+
             if code_val < last_code:
                 break
 
