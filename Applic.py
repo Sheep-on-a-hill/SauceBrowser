@@ -406,7 +406,7 @@ class ThemeSelectorPopup(tk.Toplevel):
         bg_color = self.style.lookup("TFrame", "background") or "SystemButtonFace"
         self.configure(bg=bg_color)
 
-        label = ttk.Label(self, text="Select a Theme", font=("Arial", 16))
+        label = ttk.Label(self, text="Select a Theme", font=(self.controller.settings["theme"]["font_family"], 16))
         label.pack(pady=20)
 
         # List of available themes
@@ -468,7 +468,7 @@ class HomePage(ttk.Frame):
         self.in_progress = []
         self.in_progress_dict = {}
 
-        ttk.Label(self, text="Welcome to the sauce selector", font=("Arial", 16)).pack(pady=20)
+        ttk.Label(self, text="Welcome to the sauce selector", font=(self.controller.settings["theme"]["font_family"], 16)).pack(pady=20)
 
         # In-progress comics region
         self.in_progress_frame = ttk.Frame(self, borderwidth=2, relief="ridge")
@@ -566,7 +566,7 @@ class HomePage(ttk.Frame):
                 text=str(code_str),
                 image=self.images[idx],
                 compound="center",
-                font=("Arial", 12),
+                font=(self.controller.settings["theme"]["font_family"], self.controller.settings["theme"]["font_size"]),
                 width=btn_width,
                 height=btn_height,
                 command=lambda c=(code_str, self.in_progress_dict[code_str]): self.open_in_progress_code(c)
@@ -945,7 +945,7 @@ class PageOne(ttk.Frame):
                 text=str(code_val),
                 image=self.images[idx],
                 compound="center",
-                font=("Arial", 12),
+                font=(self.controller.settings["theme"]["font_family"], self.controller.settings["theme"]["font_size"]),
                 width=10,
                 height=8,
                 command=lambda val=code_val: self.open_code(val)
@@ -1600,7 +1600,7 @@ class PageThree(ttk.Frame):
                 self.items_frame,
                 text=str(tag_name),
                 compound="center",
-                font=("Arial", 12),
+                font=(self.controller.settings["theme"]["font_family"], self.controller.settings["theme"]["font_size"]),
                 command=lambda code=tag_code, name=tag_name: self.ban_tag((code, name))
             )
             button.grid(row=r, column=c, padx=10, pady=10, sticky="nsew")
@@ -1670,7 +1670,7 @@ class PageFour(ttk.Frame):
         self.notebook = notebook
         self.controller = controller
 
-        ttk.Label(self, text="Statistics", font=("Arial", 16)).pack(pady=10)
+        ttk.Label(self, text="Statistics", font=(self.controller.settings["theme"]["font_family"], 16)).pack(pady=10)
         self.usable_codes_label = ttk.Label(self, text="Usable Codes: 0")
         self.usable_codes_label.pack(pady=5)
 

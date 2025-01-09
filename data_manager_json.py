@@ -118,9 +118,11 @@ def load_favorite_json():
             code_int = int(code_str)
             tags_list = obj.get("tags", [])
             name = obj.get("name", "")
+            folder = obj.get("folder", None)
             final_dict[code_int] = {
                 "tags": set(tags_list),
-                "name": name
+                "name": name,
+                "folder":folder
             }
         return final_dict   
     except:
@@ -139,7 +141,8 @@ def add_favorites_json(code_dict):
         name_val = data_obj.get("name", "")
         updated_dict[str(code_int)] = {
             "tags": list(tags_set),
-            "name": name_val
+            "name": name_val,
+            "folder": None
         }
     settings = load_settings()
     info_dir = settings["paths"]["info_directory"]
@@ -157,9 +160,11 @@ def save_favorites_json(codes_dict):
     for code_int, data_obj in codes_dict.items():
         tags_set = data_obj.get("tags", set())
         name_val = data_obj.get("name", "")
+        folder = data_obj.get("folder", None)
         updated_dict[str(code_int)] = {
             "tags": list(tags_set),
-            "name": name_val
+            "name": name_val,
+            "folder":folder
         }
     settings = load_settings()
     info_dir = settings["paths"]["info_directory"]
