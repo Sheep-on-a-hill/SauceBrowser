@@ -26,7 +26,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageTk
 
 import tkinter as tk
-from tkinter import ttk, Toplevel, messagebox
+from tkinter import ttk, Toplevel, messagebox, simpledialog
 from tkinter.ttk import Progressbar
 from ttkthemes import ThemedTk
 
@@ -969,24 +969,30 @@ class PageTwo(ttk.Frame):
         self.notebook = notebook
         self.controller = controller
 
-        self.items_per_page = 24
+        self.items_per_page = 12
         self.current_page = 0
 
-        # Search/Sort UI
+        # --- UI: Search / Sort bar ---
         self.search_sort_frame = ttk.Frame(self)
         self.search_sort_frame.pack(pady=5, fill="x")
 
-        # Name search
+        # Name filter
         ttk.Label(self.search_sort_frame, text="Name:").pack(side=tk.LEFT, padx=5)
         self.name_search_entry = ttk.Entry(self.search_sort_frame, width=20)
         self.name_search_entry.pack(side=tk.LEFT, padx=5)
         self.name_search_entry.bind("<Return>", lambda e: self.apply_filters())
 
-        # Tag search
+        # Tag filter
         ttk.Label(self.search_sort_frame, text="Tag(s):").pack(side=tk.LEFT, padx=5)
         self.tag_filter_entry = ttk.Entry(self.search_sort_frame, width=15)
         self.tag_filter_entry.pack(side=tk.LEFT, padx=5)
         self.tag_filter_entry.bind("<Return>", lambda e: self.apply_filters())
+
+        # Folder filter
+        ttk.Label(self.search_sort_frame, text="Folder:").pack(side=tk.LEFT, padx=5)
+        self.folder_filter_entry = ttk.Entry(self.search_sort_frame, width=15)
+        self.folder_filter_entry.pack(side=tk.LEFT, padx=5)
+        self.folder_filter_entry.bind("<Return>", lambda e: self.apply_filters())
 
         # Sort preference
         ttk.Label(self.search_sort_frame, text="Sort:").pack(side=tk.LEFT, padx=5)
@@ -1004,7 +1010,7 @@ class PageTwo(ttk.Frame):
         )
         self.search_button.pack(side=tk.LEFT, padx=5)
 
-        # Main items frame + pagination
+        # --- Main items frame + pagination ---
         self.items_frame = ttk.Frame(self)
         self.items_frame.pack(pady=10)
 
@@ -1016,70 +1022,128 @@ class PageTwo(ttk.Frame):
 
         self.next_button = ttk.Button(self.nav_frame, text="Next", command=self.next_page)
         self.next_button.pack(side=tk.LEFT, padx=10)
-
-        # Right-click menu
+        
+        # Right-click menu for code items
         self.current_button = None
         self.popup_menu = tk.Menu(self, tearoff=0)
-        self.popup_menu.add_command(label="Remove", command=self.discard)
+        self.add_menu = tk.Menu(self.popup_menu, tearoff=0)
 
-        # Fav data
-        self.favorites_dict = {}
-        self.displayed_favorites = []
+        # This list holds either ("folder", folder_name) or ("code", code_val).
+        self.display_list = []
 
         self.apply_filters()
-
-    def get_cover_url_sync(self, code_int):
-        future = asyncio.run_coroutine_threadsafe(
-            self.controller.cover_loader.load_cover_image_if_needed(code_int),
-            self.controller.loop
-        )
-        return future.result()
 
     def apply_filters(self):
         """Load favorites, filter by name/tag, then sort by user preference."""
         self.favorites_dict = dm.load_favorite_json()
-        all_favorites = list(self.favorites_dict.keys())
 
-        # Name filter (partial)
+        # Grab filter inputs
         name_query = self.name_search_entry.get().strip().lower()
+        tag_query = self.tag_filter_entry.get().strip().lower()
+        folder_query = self.folder_filter_entry.get().strip().lower()
+        sort_pref = self.sort_combobox.get()
 
-        # Tag filter: user can type either numeric IDs or text partials.
-        raw_tags = self.tag_filter_entry.get().strip()
+        # Convert comma-separated tag strings to tag IDs
         tag_ids_to_filter = []
-        if raw_tags:
-            for tag_input in raw_tags.split(","):
-                tag_input = tag_input.strip()
-                # Try converting to int
+        if tag_query:
+            for tag_part in tag_query.split(","):
+                tag_part = tag_part.strip().lower()
                 try:
-                    tag_ids_to_filter.append(int(tag_input))
+                    tag_ids_to_filter.append(int(tag_part))
                 except ValueError:
-                    # Fallback: search by partial text
-                    possible_ids = self.find_tag_id(tag_input.lower())
-                    tag_ids_to_filter.extend(possible_ids)
+                    tag_ids_to_filter.extend(self.find_tag_id(tag_part))
 
-        # Perform filtering
-        filtered_codes = []
-        for code_val in all_favorites:
-            entry = self.favorites_dict[code_val]
-            match_name = name_query in entry["name"].lower() if name_query else True
+        # We'll build a "raw" list, then sort it
+        combined_items = []
+        self.folders = []
 
+        for code_val, fav_entry in self.favorites_dict.items():
+            if not fav_entry or not isinstance(fav_entry, dict):
+                continue
+
+            # Basic info
+            name_val = str(fav_entry.get("name", ""))
+            folder_val = str(fav_entry.get("folder", "") or "")
+            folder_lower = folder_val.lower()
+            code_tags = set(fav_entry.get("tags", []))
+
+            # Check filters
+            match_name = (name_query in name_val.lower()) if name_query else True
+            # For folder filtering, if folder_query is empty, we don't use it as a gate to hide codes.
+            # But if folder_query is present, we only want codes that match it.
+            match_folder = True
+            if folder_query:
+                # If user typed a folder filter, only show codes that have that folder
+                match_folder = (folder_query in folder_lower)
+            else:
+                # If user left folder filter blank, we do not necessarily hide items by folder.
+                # We'll handle logic below on how to show/hide foldered codes.
+                pass
+
+            # Tag match
             if tag_ids_to_filter:
-                code_tags = set(entry["tags"])
                 match_tags = any(tid in code_tags for tid in tag_ids_to_filter)
             else:
                 match_tags = True
 
-            if match_name and match_tags:
-                filtered_codes.append(code_val)
+            if not (match_name and match_folder and match_tags):
+                # This item doesn't match all filters -> skip
+                continue
 
-        # Sort
-        sort_pref = self.sort_combobox.get()
+            # ----------------------------------
+            # Decide what to add to display_list:
+            # - If the folder filter is blank, we only show folder BUTTONS (not codes) 
+            #   if they actually have a folder, 
+            #   and show code if it's un-foldered
+            #
+            # - If the folder filter is set, we show only codes from that folder.
+            # ----------------------------------
+
+            if folder_query == "":
+                # 1) If this code has a folder, we do NOT add it as ("code", code_val).
+                #    Instead, we add one folder button for that folder. 
+                #    But we must ensure not to add duplicates of the same folder.
+                if folder_val.strip():
+                    # We'll store it as ("folder", folder_val), but avoid duplicates
+                    # by only adding if it's not already in combined_items.
+                    # (We can also handle duplicates by building a set of folder names first.)
+                    already_has = any(
+                        (it[0] == "folder" and it[1].lower() == folder_val.lower())
+                        for it in combined_items
+                    )
+                    if not already_has:
+                        combined_items.append(("folder", folder_val, code_val))
+                        self.folders.append(folder_val)
+                else:
+                    # 2) If there's no folder, this is un-foldered => show the code
+                    combined_items.append(("code", code_val, 0))
+
+            else:
+                # The user typed a folder filter => we only show codes that match that folder
+                # So, if code_val is indeed in the folder, show it
+                if folder_val.strip():
+                    # Show the actual code now
+                    combined_items.append(("code", code_val, 0))
+                else:
+                    # If it's un-foldered, it doesn't belong to that folder
+                    pass
+
+        # ---------- Sorting ----------
         if sort_pref == "Alphabetical":
-            filtered_codes.sort(key=lambda c: self.favorites_dict[c]["name"].lower())
-        elif sort_pref == "Random":
-            random.shuffle(filtered_codes)
+            def sort_key(item):
+                if item[0] == "folder":
+                    # Sort by folder name
+                    return item[1].lower()
+                else:
+                    # item == ("code", code_val)
+                    c_val = item[1]
+                    return self.favorites_dict[c_val]["name"].lower()
+            combined_items.sort(key=sort_key)
 
-        self.displayed_favorites = filtered_codes
+        elif sort_pref == "Random":
+            random.shuffle(combined_items)
+
+        self.display_list = combined_items
         self.current_page = 0
         self.update_page()
 
@@ -1090,7 +1154,7 @@ class PageTwo(ttk.Frame):
 
         start_index = self.current_page * self.items_per_page
         end_index = start_index + self.items_per_page
-        page_items = self.displayed_favorites[start_index:end_index]
+        page_items = self.display_list[start_index:end_index]
 
         # Decide button size
         if self.controller.settings['images']:
@@ -1101,68 +1165,92 @@ class PageTwo(ttk.Frame):
             btn_width = 10
 
         self.images = []
-        for code in page_items:
-            try:
-                self.controller.full_list[code]
-            except:
-                self.controller.full_list[code] = {
-                    "tags": [
-                    ],
-                    "cover": "",
-                    "visible": 1
-                    }
-  
-            cover_url = self.controller.full_list.get(code, {}).get('cover')
-            if cover_url is None or cover_url == "":
-                cover_url = self.get_cover_url_sync(code)
-                self.controller.full_list[code]['cover'] = cover_url
+        cols = 6
+        row = 0
+        col = 0
 
-            image_path = os.path.join(COVERS_DIR, f"{code}.jpg")
-            if os.path.exists(image_path):
+        for item_type, value, first in page_items:
+            if item_type == "folder":
+                # Show a folder button
+                folder_frame = ttk.Frame(self.items_frame)
+                folder_frame.grid(row=row, column=col, padx=10, pady=5, sticky="nsew")
+                
+                label_text = "GROUP: " + value
+                label = ttk.Label(folder_frame, text=label_text, wraplength=100, justify="center")
+                
+                
+                image_path = os.path.join(COVERS_DIR, f"{first}.jpg")
                 img = Image.open(image_path).resize((100, 150))
                 photo_img = ImageTk.PhotoImage(img)
-                
-            else:
-                photo_img = load_cover_image_sync(
-                    cover_url,
-                    size=(100, 150),
-                    load_images=self.controller.settings['images']
+
+                folder_name = value
+                folder_btn = tk.Button(
+                    folder_frame,
+                    image=photo_img,
+                    width=btn_width,
+                    height=btn_height,
+                    command=lambda fn=folder_name: self.show_only_that_folder(fn)
                 )
-            self.images.append(photo_img)
+                folder_btn.pack()
+                label.pack(pady=(0, 10))
+                
+                self.images.append(photo_img)
 
-        # Grid up to 6 rows x 4 columns = 24
-        cols = 4
-        for idx, code_val in enumerate(page_items):
-            r = idx // cols
-            c = idx % cols
+                col += 1
+                if col >= cols:
+                    row += 1
+                    col = 0
 
-            item_frame = ttk.Frame(self.items_frame)
-            item_frame.grid(row=r, column=c, padx=10, pady=0, sticky="nsew")
+            else:
+                # item_type == "code"
+                code_val = value
+                # Ensure the code is in self.controller.full_list
+                if code_val not in self.controller.full_list:
+                    self.controller.full_list[code_val] = {"tags": [], "cover": "", "visible": 1}
 
-            label_text = self.favorites_dict[code_val]['name']
-            label = ttk.Label(item_frame, text=label_text, wraplength=100, justify="center")
+                cover_url = self.controller.full_list[code_val].get("cover") or None
+                image_path = os.path.join(COVERS_DIR, f"{code_val}.jpg")
+                if os.path.exists(image_path):
+                    img = Image.open(image_path).resize((100, 150))
+                    photo_img = ImageTk.PhotoImage(img)
+                else:
+                    photo_img = load_cover_image_sync(
+                        cover_url,
+                        size=(100, 150),
+                        load_images=self.controller.settings['images']
+                    )
 
-            button = tk.Button(
-                item_frame,
-                image=self.images[idx],
-                width=btn_width,
-                height=btn_height,
-                command=lambda val=code_val: self.open_code(val)
-            )
-            button.pack()
-            label.pack(pady=(0, 10))
+                self.images.append(photo_img)
 
-            # Right-click binding
-            button.bind("<Button-3>", self.show_popup)
-            # Store code on the button so we can retrieve it easily
-            button.code_val = code_val
+                item_frame = ttk.Frame(self.items_frame)
+                item_frame.grid(row=row, column=col, padx=10, pady=0, sticky="nsew")
+
+                label_text = self.favorites_dict[code_val]['name']
+                label = ttk.Label(item_frame, text=label_text, wraplength=100, justify="center")
+
+                button = tk.Button(
+                    item_frame,
+                    image=photo_img,
+                    width=btn_width,
+                    height=btn_height,
+                    command=lambda val=code_val: self.open_code(val)
+                )
+                button.pack()
+                label.pack(pady=(0, 10))
+
+                # Right-click binding
+                button.bind("<Button-3>", self.show_popup)
+                button.code_val = code_val
+
+                col += 1
+                if col >= cols:
+                    row += 1
+                    col = 0
 
         # Pagination controls
         self.prev_button.config(state=tk.NORMAL if self.current_page > 0 else tk.DISABLED)
-        next_disabled = (self.current_page + 1) * self.items_per_page >= len(self.displayed_favorites)
+        next_disabled = (self.current_page + 1) * self.items_per_page >= len(self.display_list)
         self.next_button.config(state=tk.NORMAL if not next_disabled else tk.DISABLED)
-
-        self.controller.adjust_window_size()
 
     def next_page(self):
         self.current_page += 1
@@ -1176,10 +1264,93 @@ class PageTwo(ttk.Frame):
         open_in_browser(code)
         home_page = self.controller.get_page(0)
         self.controller.notebook.select(home_page)
+        
+    def show_only_that_folder(self, folder_name):
+        """
+        Replace the folder filter with the chosen folder name,
+        so we display codes that have that folder.
+        """
+        self.folder_filter_entry.delete(0, tk.END)
+        self.folder_filter_entry.insert(0, folder_name)
+        self.apply_filters()
 
     def show_popup(self, event):
+        """
+        Right-click context menu for code items:
+         - We'll rebuild the popup menu each time, so we can decide if "Remove from folder" is needed.
+        """
         self.current_button = event.widget
+        code = getattr(self.current_button, 'code_val', None)
+
+        # Clear old menu items
+        self.popup_menu.delete(0, tk.END)
+        self.add_menu.delete(0, tk.END)
+
+        # Common items
+        self.popup_menu.add_command(label="Remove from favorites", command=self.discard)
+        
+        self.add_menu.add_command(label = "Create Group", command = self.create_folder)        
+        for folder in self.folders:
+            self.add_menu.add_command(label = f"{folder}", command = lambda f = folder: self.add_to_folder(f))
+            
+        self.popup_menu.add_cascade(label = "Add to Group", menu = self.add_menu)
+
+        # If this code is actually in a folder, show "Remove from folder" option
+        if code:
+            fav_dict = dm.load_favorite_json()
+            if code in fav_dict:
+                folder_name = fav_dict[code].get("folder", "")
+                if folder_name != None:
+                    if folder_name.strip():
+                        # The code is in a folder, so let's allow removal
+                        self.popup_menu.add_command(label="Remove from folder", command=self.remove_from_folder)
+
         self.popup_menu.tk_popup(event.x_root, event.y_root)
+        
+    def create_folder(self):
+        """
+        Prompt the user to move the selected code to a different folder.
+        """
+        if self.current_button is None:
+            return
+        code = getattr(self.current_button, 'code_val', None)
+        if code is None:
+            return
+
+        new_folder = simpledialog.askstring("Move to Folder", "Enter new folder name:")
+        if new_folder is not None:
+            self.favorites_dict[code]["folder"] = new_folder
+            dm.save_favorites_json(self.favorites_dict)
+            self.apply_filters()
+            
+    def remove_from_folder(self):
+        """
+        Set folder to "" for this code and re-save.
+        """
+        if not self.current_button:
+            return
+        code = getattr(self.current_button, 'code_val', None)
+        if not code:
+            return
+
+        fav_dict = dm.load_favorite_json()
+        if code in fav_dict:
+            fav_dict[code]["folder"] = ""  # Clear the folder
+            dm.save_favorites_json(fav_dict)
+
+        self.apply_filters()
+        
+    def add_to_folder(self, new_folder):
+        if self.current_button is None:
+            return
+        code = getattr(self.current_button, 'code_val', None)
+        if code is None:
+            return
+        
+        if new_folder is not None:
+            self.favorites_dict[code]["folder"] = new_folder
+            dm.save_favorites_json(self.favorites_dict)
+            self.apply_filters()
 
     def discard(self):
         """
